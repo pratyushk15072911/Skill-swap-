@@ -1,0 +1,5 @@
+{
+  "name": "SkillSwap — Student Skill Exchange",
+  "description": "A peer-to-peer learning platform for students to exchange skills like coding, music, and design. Features AI-powered matching and a cozy study room aesthetic.",
+  "requestFramePermissions": ["camera", "microphone", "display-capture"]
+}

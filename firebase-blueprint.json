@@ -1,0 +1,149 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Stores student profile information including their college and skills.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "displayName": { "type": "string" },
+        "username": { "type": "string", "description": "Unique username for the user" },
+        "email": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "college": { "type": "string", "description": "The student's college name" },
+        "bio": { "type": "string" },
+        "skillsToTeach": { "type": "array", "items": { "type": "string" } },
+        "skillsToLearn": { "type": "array", "items": { "type": "string" } },
+        "certificates": { 
+          "type": "array", 
+          "items": { 
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "url": { "type": "string" },
+              "issuedBy": { "type": "string" }
+            }
+          } 
+        },
+        "karma": { "type": "number", "description": "Credits earned by teaching" },
+        "connections": { "type": "array", "items": { "type": "string" }, "description": "List of UIDs of connected users" },
+        "isOnline": { "type": "boolean" },
+        "lastSeen": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "email"]
+    },
+    "ConnectionRequest": {
+      "title": "Connection Request",
+      "description": "A request from one user to connect with another.",
+      "type": "object",
+      "properties": {
+        "fromUid": { "type": "string" },
+        "fromName": { "type": "string" },
+        "toUid": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["fromUid", "toUid", "status", "createdAt"]
+    },
+    "Session": {
+      "title": "Study Session History",
+      "description": "A record of a completed study session.",
+      "type": "object",
+      "properties": {
+        "participants": { "type": "array", "items": { "type": "string" } },
+        "duration": { "type": "number" },
+        "roomId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["participants", "roomId", "createdAt"]
+    },
+    "SkillPost": {
+      "title": "Skill Exchange Post",
+      "description": "A public post where a student offers or requests a skill.",
+      "type": "object",
+      "properties": {
+        "authorUid": { "type": "string" },
+        "authorName": { "type": "string" },
+        "type": { "type": "string", "enum": ["teach", "learn"] },
+        "skill": { "type": "string" },
+        "description": { "type": "string" },
+        "password": { "type": "string", "description": "Optional password for the meeting" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["authorUid", "type", "skill", "createdAt"]
+    },
+    "Message": {
+      "title": "Chat Message",
+      "description": "A message sent in the community chat room.",
+      "type": "object",
+      "properties": {
+        "authorUid": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorPhoto": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "isModerated": { "type": "boolean" },
+        "isHighlighted": { "type": "boolean" }
+      },
+      "required": ["authorUid", "authorName", "text", "createdAt"]
+    },
+    "Room": {
+      "title": "Study Room Session",
+      "description": "Metadata for a live study room session.",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string" },
+        "hostId": { "type": "string" },
+        "coHostIds": { "type": "array", "items": { "type": "string" } },
+        "title": { "type": "string" },
+        "password": { "type": "string", "description": "Optional password for the meeting" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["roomId", "hostId", "createdAt"]
+    },
+    "WaitingUser": {
+      "title": "Waiting Room User",
+      "description": "A user waiting to be admitted to a study room.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "joinedAt": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["waiting", "admitted", "denied"] }
+      },
+      "required": ["userId", "displayName", "joinedAt", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Private student profiles"
+    },
+    "/posts/{postId}": {
+      "schema": "SkillPost",
+      "description": "Public skill exchange listings"
+    },
+    "/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Global community chat messages"
+    },
+    "/rooms/{roomId}": {
+      "schema": "Room",
+      "description": "Live study room metadata"
+    },
+    "/rooms/{roomId}/waitingUsers/{userId}": {
+      "schema": "WaitingUser",
+      "description": "Users in the waiting room"
+    },
+    "/connectionRequests/{requestId}": {
+      "schema": "ConnectionRequest",
+      "description": "User-to-user connection requests"
+    },
+    "/sessions/{sessionId}": {
+      "schema": "Session",
+      "description": "Completed session history"
+    }
+  }
+}
