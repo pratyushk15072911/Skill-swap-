@@ -1,2963 +1,2352 @@
-import { useState, useEffect, useRef } from 'react';
-import { auth, db, googleProvider, signInWithPopup, signOut, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, doc, setDoc, getDoc, getDocs, limit, where, updateDoc, deleteDoc, arrayUnion } from './firebase';
-import { useAuthState } from 'react-firebase-hooks/auth';
-import { useCollection } from 'react-firebase-hooks/firestore';
+import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { GraduationCap, LogOut, Plus, Sparkles, Coffee, Lamp, Send, MessageSquare, Wand2, Video as VideoIcon, VideoOff, Mic, MicOff, X, PhoneOff, Settings, Code, Cpu, Atom, Book, Pencil, Calculator, Binary, Dna, FlaskConical, Microscope, Monitor, Hand, Clipboard, Eraser, BrainCircuit, Image as ImageIcon, Film, Volume2, Loader2, Save, FileText, Lightbulb, Ruler, XCircle, Clock, Users, Check, ShieldAlert, ShieldCheck, Lock, Radio, Square, Download, Search, UserPlus, Calendar, Camera, Award, BookOpen } from 'lucide-react';
+import { useAuthState } from 'react-firebase-hooks/auth';
+import { useCollection, useDocumentData } from 'react-firebase-hooks/firestore';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import Markdown from 'react-markdown';
+import { SelfieSegmentation, Results } from '@mediapipe/selfie_segmentation';
+import { Camera as MediaPipeCamera } from '@mediapipe/camera_utils';
+import { 
+  GraduationCap, Volume2, Star, LogOut, Coffee, 
+  MessageSquare, Send, Plus, Video, BrainCircuit, 
+  Image as ImageIcon, Upload, Loader2, X, ArrowRight,
+  Search, UserPlus, Check, User, History, Users, ExternalLink,
+  Mic, MicOff, VideoOff, MonitorUp, PenTool, Eraser, Camera, Presentation,
+  Clock, Timer
+} from 'lucide-react';
 import { cn } from './lib/utils';
-import { GoogleGenAI, Modality, ThinkingLevel, Type } from "@google/genai";
-import { SelfieSegmentation } from "@mediapipe/selfie_segmentation";
-import { io } from "socket.io-client";
-import Peer from "simple-peer";
+import { 
+  auth, db, googleProvider, signInWithPopup, signOut, 
+  collection, addDoc, query, orderBy, onSnapshot, 
+  serverTimestamp, doc, setDoc, getDoc, getDocs, 
+  limit, where, updateDoc, deleteDoc, arrayUnion, arrayRemove,
+  storage, ref, uploadBytes, getDownloadURL
+} from './firebase';
 
 // --- Types ---
-interface UserProfile {
-  uid: string;
-  displayName: string;
-  username?: string;
-  email: string;
-  photoURL?: string;
-  college?: string;
-  bio?: string;
-  skillsToTeach?: string[];
-  skillsToLearn?: string[];
-  certificates?: { name: string; url: string; issuedBy: string }[];
-  karma?: number;
-  connections?: string[];
-  isOnline?: boolean;
-  lastSeen?: any;
+declare global {
+  interface Window {
+    aistudio: {
+      hasSelectedApiKey: () => Promise<boolean>;
+      openSelectKey: () => Promise<void>;
+    };
+  }
 }
 
-interface ConnectionRequest {
-  id: string;
-  fromUid: string;
-  fromName: string;
-  toUid: string;
-  status: 'pending' | 'accepted' | 'declined';
-  createdAt: any;
+type Message = {
+  role: 'user' | 'ai';
+  text: string;
+};
+
+// --- Helper for Base64 ---
+const fileToBase64 = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        const base64 = reader.result.split(',')[1];
+        resolve(base64);
+      } else {
+        reject(new Error('Failed to convert file to base64'));
+      }
+    };
+    reader.onerror = error => reject(error);
+  });
+};
+
+// --- Error Handling ---
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
 }
 
-interface SessionRecord {
-  id: string;
-  participants: string[];
-  duration: number;
-  roomId: string;
-  createdAt: any;
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
 }
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+// --- Hooks ---
+
+const useApiKey = () => {
+  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    const checkKey = async () => {
+      if (window.aistudio) {
+        const selected = await window.aistudio.hasSelectedApiKey();
+        setHasApiKey(selected);
+      } else {
+        setHasApiKey(true);
+      }
+    };
+    checkKey();
+  }, []);
+
+  const handleSelectKey = async () => {
+    if (window.aistudio) {
+      await window.aistudio.openSelectKey();
+      setHasApiKey(true);
+    }
+  };
+
+  return { hasApiKey, handleSelectKey, setHasApiKey };
+};
 
 // --- Components ---
 
-const BrutalistHero = () => {
+const Starfield = () => {
   return (
-    <div className="relative w-full h-full bg-[#FFD700] border-4 border-black shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] overflow-hidden flex flex-col">
-      {/* Top Nav Tabs */}
-      <div className="flex border-b-4 border-black bg-[#FF80BF]">
-        {['HOME', 'NEWS', 'CLASS', 'ABOUT US', 'CONTACT', 'FAQ'].map((tab, i) => (
-          <div key={tab} className={cn(
-            "flex-1 py-3 text-[10px] font-black text-center border-r-4 border-black last:border-r-0 hover:bg-white transition-colors cursor-pointer",
-            i === 0 && "bg-white"
-          )}>
-            {tab}
-          </div>
-        ))}
-        <div className="px-4 flex items-center border-l-4 border-black bg-white">
-          <div className="w-6 h-0.5 bg-black mb-1" />
-          <div className="w-6 h-0.5 bg-black mb-1" />
-          <div className="w-6 h-0.5 bg-black" />
-        </div>
-      </div>
-
-      <div className="flex-1 flex flex-col md:flex-row">
-        {/* Left Content */}
-        <div className="flex-1 p-8 relative border-r-4 border-black md:border-r-4">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-12 h-4 bg-black/10 rounded-full" />
-            <div className="w-4 h-4 bg-black rounded-full" />
-          </div>
-          
-          <h1 className="text-6xl font-black text-black leading-none mb-4 uppercase tracking-tighter">
-            BE AN <br />
-            <span className="bg-[#C0A0FF] px-2 border-4 border-black inline-block my-2 text-[#FFD700] [-webkit-text-stroke:2px_black]">INTERNATIONAL</span> <br />
-            STUDENT
-          </h1>
-
-          <p className="text-lg font-bold text-black/80 max-w-xs mb-8 leading-tight">
-            SkillSwap connects you with peers globally to trade knowledge and build your future.
-          </p>
-
-          <div className="bg-[#C0A0FF] border-4 border-black p-3 flex items-center gap-4 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
-            <div className="w-10 h-10 bg-white border-4 border-black rounded-full flex items-center justify-center">
-              <Monitor className="w-6 h-6 text-black" />
-            </div>
-            <span className="font-black text-sm uppercase">www.skillswap.edu</span>
-          </div>
-
-          {/* Decorative Icons */}
-          <div className="absolute top-10 right-10">
-             <div className="relative">
-               <Lightbulb className="w-12 h-12 text-black fill-[#FFD700]" />
-               <div className="absolute -top-2 -right-2 w-4 h-4 bg-black rounded-full" />
-             </div>
-          </div>
-          <div className="absolute bottom-20 right-10">
-             <Pencil className="w-12 h-12 text-[#FF80BF] rotate-12" />
-          </div>
-          <div className="absolute bottom-40 right-4">
-             <Ruler className="w-16 h-16 text-[#C0A0FF] -rotate-45" />
-          </div>
-          <div className="absolute top-1/2 left-4 -translate-y-1/2 flex flex-col gap-1">
-             {[...Array(6)].map((_, i) => (
-               <div key={i} className="w-1 h-1 bg-black rounded-full" />
-             ))}
-          </div>
-        </div>
-
-        {/* Right Image Area */}
-        <div className="flex-1 bg-white relative overflow-hidden">
-          <div className="absolute top-0 left-0 right-0 h-12 bg-[#C0A0FF] border-b-4 border-black flex items-center justify-between px-4">
-            <div className="flex gap-1">
-              <div className="w-8 h-8 border-2 border-black rotate-45" />
-              <div className="w-8 h-8 border-2 border-black" />
-            </div>
-            <span className="font-black text-xs">SKILLSWAP LOGO</span>
-          </div>
-          
-          <img 
-            src="https://images.unsplash.com/photo-1523240715630-9918c13d190c?auto=format&fit=crop&q=80&w=1000" 
-            alt="Student" 
-            className="w-full h-full object-cover pt-12"
-            referrerPolicy="no-referrer"
-          />
-
-          <div className="absolute bottom-0 left-0 bg-[#FFD700] border-t-4 border-r-4 border-black p-6">
-            <div className="text-6xl font-black leading-none">20<br />27</div>
-          </div>
-          
-          <div className="absolute bottom-4 right-4 flex gap-2">
-             <div className="w-4 h-4 border-2 border-black rotate-45" />
-             <div className="w-4 h-4 border-2 border-black rotate-12" />
-          </div>
-        </div>
-      </div>
+    <div className="starfield">
+      {[...Array(100)].map((_, i) => (
+        <div 
+          key={i} 
+          className="star" 
+          style={{
+            top: `${Math.random() * 100}%`,
+            left: `${Math.random() * 100}%`,
+            width: `${Math.random() * 3}px`,
+            height: `${Math.random() * 3}px`,
+            '--duration': `${2 + Math.random() * 4}s`
+          } as any}
+        />
+      ))}
     </div>
   );
 };
 
-const Button = ({ className, variant = 'primary', ...props }: any) => {
-  const variants = {
-    primary: 'bg-[#0080FF] text-white border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none',
-    secondary: 'bg-white text-black border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none',
-    ghost: 'text-black hover:bg-black/5',
-  };
+const LoadingScreen = () => {
   return (
-    <button
-      className={cn(
-        'px-6 py-2 transition-all duration-200 font-black uppercase tracking-tighter flex items-center justify-center gap-2 cursor-pointer',
-        variants[variant as keyof typeof variants],
-        className
-      )}
-      {...props}
-    />
-  );
-};
-
-const Card = ({ className, children }: any) => (
-  <div className={cn('bg-white border-4 border-black p-6 shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]', className)}>
-    {children}
-  </div>
-);
-
-const BackgroundVisuals = () => {
-  return (
-    <div className="fixed inset-0 pointer-events-none overflow-hidden z-0 opacity-10">
-      {/* Grid Pattern */}
-      <div className="absolute inset-0" style={{ 
-        backgroundImage: 'radial-gradient(circle, #000 1px, transparent 1px)', 
-        backgroundSize: '40px 40px' 
-      }} />
+    <div className="min-h-screen bg-[#030712] flex flex-col items-center justify-center p-4 overflow-hidden relative">
+      <Starfield />
       
-      {/* Large Brutalist Shapes */}
-      <div className="absolute top-[-10%] left-[-10%] w-[40%] aspect-square bg-[#C0A0FF] border-8 border-black rounded-full rotate-12" />
-      <div className="absolute bottom-[-10%] right-[-10%] w-[40%] aspect-square bg-[#FF80BF] border-8 border-black rotate-[-12deg]" />
-      <div className="absolute top-1/2 left-[-5%] w-32 h-32 bg-[#FFD700] border-4 border-black rotate-45" />
+      {/* Warm Ambient Glows for Cozy Feel */}
+      <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-amber-500/5 blur-[120px] rounded-full -z-10 animate-pulse" />
+      <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-cyan-500/5 blur-[120px] rounded-full -z-10 animate-pulse" style={{ animationDelay: '2s' }} />
+
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 1, ease: "easeOut" }}
+        className="relative mb-12 flex flex-col items-center"
+      >
+        <div className="relative">
+          <div className="nexus-sphere w-32 h-32 border-cyan-500/20">
+            <GraduationCap className="w-16 h-16 text-cyan-400 drop-shadow-[0_0_15px_rgba(34,211,238,0.8)]" />
+          </div>
+          <motion.div 
+            animate={{ rotate: 360 }}
+            transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
+            className="absolute -inset-4 border border-dashed border-cyan-500/20 rounded-full"
+          />
+          <motion.div 
+            animate={{ rotate: -360 }}
+            transition={{ duration: 15, repeat: Infinity, ease: "linear" }}
+            className="absolute -inset-8 border border-dotted border-purple-500/20 rounded-full"
+          />
+          
+          {/* Cozy Floating Icons */}
+          <motion.div 
+            animate={{ y: [0, -10, 0], rotate: [0, 5, 0] }}
+            transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+            className="absolute -top-6 -right-6 p-3 bg-slate-900/80 backdrop-blur-md border border-white/10 rounded-xl shadow-xl"
+          >
+            <Coffee className="w-5 h-5 text-amber-400" />
+          </motion.div>
+          <motion.div 
+            animate={{ y: [0, 10, 0], rotate: [0, -5, 0] }}
+            transition={{ duration: 5, repeat: Infinity, ease: "easeInOut", delay: 1 }}
+            className="absolute -bottom-6 -left-6 p-3 bg-slate-900/80 backdrop-blur-md border border-white/10 rounded-xl shadow-xl"
+          >
+            <BrainCircuit className="w-5 h-5 text-purple-400" />
+          </motion.div>
+        </div>
+      </motion.div>
+
+      <div className="text-center relative z-10">
+        <motion.h1 
+          initial={{ letterSpacing: "15px", opacity: 0, filter: "blur(10px)" }}
+          animate={{ letterSpacing: "4px", opacity: 1, filter: "blur(0px)" }}
+          transition={{ duration: 2, ease: "easeOut" }}
+          className="text-6xl font-black mb-8 tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-white to-purple-400 glitch-text"
+        >
+          SKILL SWAP
+        </motion.h1>
+        
+        <div className="flex flex-col items-center gap-8">
+          <div className="relative w-72 h-1.5 bg-white/5 rounded-full overflow-hidden">
+            <motion.div 
+              initial={{ x: "-100%" }}
+              animate={{ x: "100%" }}
+              transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut" }}
+              className="absolute inset-0 bg-gradient-to-r from-transparent via-cyan-400 to-transparent"
+            />
+            <div className="absolute inset-0 bg-gradient-to-r from-cyan-500/20 to-purple-500/20 opacity-50" />
+          </div>
+          
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 1 }}
+            className="flex flex-col items-center max-w-lg"
+          >
+            <p className="text-cyan-400/80 font-cursive text-3xl mb-6 leading-relaxed">
+              "Knowledge is the only asset that grows when shared."
+            </p>
+            <div className="flex flex-col items-center gap-2">
+              <div className="flex items-center gap-3 text-[10px] font-bold text-slate-500 tracking-[0.5em] uppercase">
+                <Loader2 className="w-4 h-4 animate-spin text-cyan-500" />
+                Synchronizing Study Environment
+              </div>
+              <div className="text-[8px] text-slate-600 font-mono uppercase tracking-widest">
+                Protocol v3.1.4 // Neural Link Stable
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      </div>
+      
+      <div className="neural-tide opacity-10" />
     </div>
   );
 };
 
-const AIAssistant = ({ user }: { user: any }) => {
-  const [messages, setMessages] = useState<{ role: 'user' | 'model', text: string }[]>([]);
-  const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const chatRef = useRef<any>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+const LoginScreen = () => {
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async () => {
+    setLoading(true);
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const userRef = doc(db, 'users', result.user.uid);
+      const userSnap = await getDoc(userRef);
+      
+      if (!userSnap.exists()) {
+        await setDoc(userRef, {
+          uid: result.user.uid,
+          displayName: result.user.displayName,
+          email: result.user.email,
+          photoURL: result.user.photoURL,
+          username: result.user.email?.split('@')[0] || result.user.uid.slice(0, 8),
+          bio: 'I am a student eager to learn and teach!',
+          portfolioUrl: '',
+          learningPreference: 'visual',
+          availability: '',
+          skills: [],
+          skillsToLearn: [],
+          certificates: [],
+          karma: 0,
+          sessionCount: 0,
+          connections: [],
+          isOnline: true,
+          lastSeen: serverTimestamp()
+        });
+      } else {
+        await updateDoc(userRef, { isOnline: true, lastSeen: serverTimestamp() }).catch(err => handleFirestoreError(err, OperationType.UPDATE, `users/${result.user.uid}`));
+      }
+    } catch (error) {
+      console.error(error);
+      alert("Login failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-transparent flex flex-col items-center justify-center p-4 selection:bg-cyan-500/30 selection:text-cyan-100 overflow-hidden relative">
+      <Starfield />
+      
+      <div className="relative mb-12">
+        <div className="nexus-sphere">
+          <GraduationCap className="w-24 h-24 text-cyan-400 drop-shadow-[0_0_15px_rgba(34,211,238,0.8)] animate-pulse" />
+        </div>
+        <div className="absolute -inset-4 bg-cyan-500/10 blur-3xl rounded-full -z-10" />
+      </div>
+
+      <div className="glass-panel border-beam p-12 max-w-md w-full text-center ambient-glow relative z-10">
+        <h1 className="text-6xl font-black mb-4 tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-white to-purple-400 tech-hover inline-block">
+          SKILL SWAP
+        </h1>
+        <p className="text-slate-400 mb-10 font-medium tracking-wide">
+          <span className="text-cyan-400/80">SYSTEM STATUS:</span> ONLINE
+          <br />
+          Experience the convergence of knowledge and peer-to-peer learning.
+        </p>
+
+        <button
+          onClick={handleLogin}
+          disabled={loading}
+          className="w-full py-4 px-8 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white rounded-xl font-bold text-lg shadow-[0_0_20px_rgba(34,211,238,0.3)] transition-all active:scale-95 disabled:opacity-50 flex items-center justify-center gap-3 group border border-cyan-400/30"
+        >
+          {loading ? (
+            <Loader2 className="w-6 h-6 animate-spin" />
+          ) : (
+            <>
+              <div className="w-6 h-6 bg-white rounded-full flex items-center justify-center p-1">
+                <img src="https://www.google.com/favicon.ico" alt="Google" className="w-full h-full" />
+              </div>
+              INITIALIZE SESSION
+            </>
+          )}
+        </button>
+
+        <div className="mt-8 pt-8 border-t border-white/5 flex flex-col items-center gap-6">
+          <blockquote className="text-xl font-medium text-slate-400 border-l-2 border-cyan-500/30 pl-4 py-1 text-left font-cursive">
+            "Knowledge is the only asset that grows when shared."
+            <footer className="text-[10px] text-cyan-400/40 mt-1 font-bold tracking-widest uppercase font-sans">— Skill Swap Protocol</footer>
+          </blockquote>
+          <div className="flex justify-center gap-6 text-xs font-bold text-slate-500 tracking-widest uppercase">
+            <span className="hover:text-cyan-400 cursor-pointer transition-colors">Simulation</span>
+            <span className="hover:text-cyan-400 cursor-pointer transition-colors">Network</span>
+            <span className="hover:text-cyan-400 cursor-pointer transition-colors">Protocol</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="absolute bottom-8 left-8 font-mono text-[10px] text-slate-600 tracking-widest uppercase">
+        v.0.25.04.2026
+      </div>
+    </div>
+  );
+};
+
+
+const ProfilePage = ({ user }: { user: any }) => {
+  const [userData, loading] = useDocumentData(doc(db, 'users', user.uid));
+  const [isEditing, setIsEditing] = useState(false);
+  const [bio, setBio] = useState('');
+  const [username, setUsername] = useState('');
+  const [portfolioUrl, setPortfolioUrl] = useState('');
+  const [learningPreference, setLearningPreference] = useState<'visual' | 'auditory' | 'kinesthetic'>('visual');
+  const [availability, setAvailability] = useState('');
+  const [newSkillName, setNewSkillName] = useState('');
+  const [newSkillLevel, setNewSkillLevel] = useState<'Beginner' | 'Intermediate' | 'Advanced' | 'Expert'>('Beginner');
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages]);
+    if (userData) {
+      setBio(userData.bio || '');
+      setUsername(userData.username || '');
+      setPortfolioUrl(userData.portfolioUrl || (user.email === '930pratyushkumarkv42021@gmail.com' ? 'https://portfolio-showcase--pratyushk1507.replit.app/' : ''));
+      setLearningPreference(userData.learningPreference || 'visual');
+      setAvailability(userData.availability || (user.email === '930pratyushkumarkv42021@gmail.com' ? '10pm - 1am' : ''));
 
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || isLoading) return;
-
-    const userMsg = input;
-    setInput('');
-    setMessages(prev => [...prev, { role: 'user', text: userMsg }]);
-    setIsLoading(true);
-
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
-      if (!chatRef.current) {
-        chatRef.current = ai.chats.create({
-          model: "gemini-3.1-pro-preview",
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
-            systemInstruction: "You are the SkillSwap AI Study Assistant. You help engineering and science students with complex problems, study plans, and skill development. Be precise, encouraging, and highly technical when needed.",
-          },
-        });
+      // Automatically sync requested profile for this user if empty
+      if (user.email === '930pratyushkumarkv42021@gmail.com' && (!userData.portfolioUrl || !userData.availability)) {
+        updateDoc(doc(db, 'users', user.uid), {
+          portfolioUrl: userData.portfolioUrl || 'https://portfolio-showcase--pratyushk1507.replit.app/',
+          availability: userData.availability || '10pm - 1am',
+          learningPreference: userData.learningPreference || 'visual'
+        }).catch(err => handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`));
       }
+    }
+  }, [userData, user.email, user.uid]);
 
-      const result = await chatRef.current.sendMessage({ message: userMsg });
-      setMessages(prev => [...prev, { role: 'model', text: result.text || 'I encountered an error processing that.' }]);
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const storageRef = ref(storage, `profiles/${user.uid}`);
+      await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(storageRef);
+      await updateDoc(doc(db, 'users', user.uid), { photoURL: url });
     } catch (error) {
-      console.error("Chat Error:", error);
-      setMessages(prev => [...prev, { role: 'model', text: "Sorry, I'm having trouble connecting right now." }]);
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
     } finally {
-      setIsLoading(false);
+      setUploading(false);
+    }
+  };
+
+  const handleSave = async () => {
+    try {
+      await updateDoc(doc(db, 'users', user.uid), { 
+        bio, 
+        username,
+        portfolioUrl,
+        learningPreference,
+        availability
+      });
+      setIsEditing(false);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+    }
+  };
+
+  const addSkill = async () => {
+    if (!newSkillName.trim()) return;
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        skills: arrayUnion({ name: newSkillName.trim(), level: newSkillLevel })
+      });
+      setNewSkillName('');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+    }
+  };
+
+  const removeSkill = async (skillObj: any) => {
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        skills: arrayRemove(skillObj)
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+    }
+  };
+
+  if (loading) return <div className="p-8 font-black uppercase text-2xl">Loading Profile...</div>;
+
+  return (
+    <div className="w-full max-w-4xl glass-panel border-beam p-8 ambient-glow scroll-fade">
+      <div className="flex justify-between items-center mb-8 border-b border-white/10 pb-4">
+        <h2 className="text-4xl font-bold tracking-tight text-slate-200 tech-hover inline-block">My Profile</h2>
+        {!isEditing && (
+          <button onClick={() => setIsEditing(true)} className="bg-cyan-600/20 border border-cyan-500/30 text-cyan-300 px-6 py-2 rounded-lg font-semibold hover:bg-cyan-500/30 transition-all ambient-glow">
+            Edit Profile
+          </button>
+        )}
+      </div>
+
+      <div className="flex flex-col md:flex-row gap-8">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-40 h-40 rounded-full border border-white/10 bg-slate-800 overflow-hidden relative group shadow-[0_0_20px_rgba(0,0,0,0.5)]">
+            <img src={userData?.photoURL || user.photoURL} alt="Profile" className="w-full h-full object-cover" />
+            {uploading && (
+              <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center">
+                <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
+              </div>
+            )}
+            {!uploading && (
+              <label className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center opacity-0 group-hover:opacity-100 cursor-pointer transition-opacity">
+                <Upload className="text-cyan-400 w-8 h-8" />
+                <input type="file" className="hidden" onChange={handlePhotoUpload} accept="image/*" />
+              </label>
+            )}
+          </div>
+          <div className="text-center">
+            <h3 className="font-bold text-2xl text-slate-200">@{userData?.username}</h3>
+            <p className="font-medium text-slate-400">{userData?.displayName}</p>
+          </div>
+        </div>
+
+          <div className="flex-1 flex flex-col gap-4">
+            <h4 className="font-semibold uppercase tracking-widest text-sm text-slate-400">About Me</h4>
+            {isEditing ? (
+              <div className="flex flex-col gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Username</label>
+                    <input 
+                      value={username} 
+                      onChange={e => setUsername(e.target.value)} 
+                      className="bg-slate-800/50 border border-white/10 rounded-lg p-3 font-medium text-slate-200 focus:outline-none focus:border-cyan-500" 
+                      placeholder="Username" 
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Portfolio Link</label>
+                    <input 
+                      value={portfolioUrl} 
+                      onChange={e => setPortfolioUrl(e.target.value)} 
+                      className="bg-slate-800/50 border border-white/10 rounded-lg p-3 font-medium text-slate-200 focus:outline-none focus:border-cyan-500" 
+                      placeholder="https://portfolio.com" 
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Learning Preference</label>
+                    <select 
+                      value={learningPreference} 
+                      onChange={e => setLearningPreference(e.target.value as any)} 
+                      className="bg-slate-800/50 border border-white/10 rounded-lg p-3 font-medium text-slate-200 focus:outline-none focus:border-cyan-500"
+                    >
+                      <option value="visual">Visual</option>
+                      <option value="auditory">Auditory</option>
+                      <option value="kinesthetic">Kinesthetic</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Availability</label>
+                    <input 
+                      value={availability} 
+                      onChange={e => setAvailability(e.target.value)} 
+                      className="bg-slate-800/50 border border-white/10 rounded-lg p-3 font-medium text-slate-200 focus:outline-none focus:border-cyan-500" 
+                      placeholder="e.g. Mon-Fri, 6pm-9pm" 
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Bio</label>
+                  <textarea 
+                    value={bio} 
+                    onChange={e => setBio(e.target.value)} 
+                    className="bg-slate-800/50 border border-white/10 rounded-lg p-3 font-medium h-32 text-slate-200 focus:outline-none focus:border-cyan-500" 
+                    placeholder="Write a short paragraph about yourself..." 
+                  />
+                </div>
+                
+                <button onClick={handleSave} className="bg-cyan-600/20 border border-cyan-500/30 text-cyan-300 p-3 rounded-lg font-semibold hover:bg-cyan-500/30 transition-all self-start px-8 ambient-glow">
+                  Save Changes
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-4">
+                <div className="glass-panel border border-white/10 p-6 rounded-xl">
+                  <p className="font-medium text-lg whitespace-pre-wrap text-slate-300">{userData?.bio || "No bio added yet."}</p>
+                </div>
+                
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="glass-panel border border-white/5 p-4 rounded-xl flex flex-col gap-1">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Portfolio</span>
+                    {userData?.portfolioUrl ? (
+                      <a href={userData.portfolioUrl} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline truncate font-semibold">
+                        Link
+                      </a>
+                    ) : <span className="text-slate-400 font-semibold">Not set</span>}
+                  </div>
+                  <div className="glass-panel border border-white/5 p-4 rounded-xl flex flex-col gap-1">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Learning Style</span>
+                    <span className="text-slate-200 font-semibold capitalize">{userData?.learningPreference || "Not set"}</span>
+                  </div>
+                  <div className="glass-panel border border-white/5 p-4 rounded-xl flex flex-col gap-1">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Availability</span>
+                    <span className="text-slate-200 font-semibold truncate">{userData?.availability || "Not set"}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+      </div>
+      
+      <div className="mt-12 pt-8 border-t border-white/10">
+        <h3 className="text-2xl font-bold tracking-tight mb-6 text-slate-200">Skills & Proficiency</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+          {userData?.skills?.map((skill: any, idx: number) => (
+            <div key={idx} className="glass-panel border border-white/10 p-4 rounded-xl flex items-center justify-between group">
+              <div className="flex flex-col">
+                <span className="font-bold text-slate-200">{skill.name}</span>
+                <span className={cn(
+                  "text-[10px] font-bold uppercase tracking-widest",
+                  skill.level === 'Expert' ? "text-purple-400" :
+                  skill.level === 'Advanced' ? "text-cyan-400" :
+                  skill.level === 'Intermediate' ? "text-blue-400" : "text-slate-400"
+                )}>
+                  {skill.level}
+                </span>
+              </div>
+              <button onClick={() => removeSkill(skill)} className="text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          ))}
+          {(!userData?.skills || userData.skills.length === 0) && (
+            <div className="col-span-full py-8 text-center text-slate-500 font-semibold border-2 border-dashed border-white/5 rounded-xl">
+              No skills added yet.
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-4 max-w-2xl bg-slate-900/50 p-6 rounded-2xl border border-white/5">
+          <div className="flex-1 flex flex-col gap-2">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Skill Name</label>
+            <input 
+              value={newSkillName} 
+              onChange={e => setNewSkillName(e.target.value)} 
+              className="bg-slate-800/50 border border-white/10 rounded-lg p-3 font-medium text-slate-200 focus:outline-none focus:border-cyan-500" 
+              placeholder="e.g. React, Python" 
+            />
+          </div>
+          <div className="w-full sm:w-40 flex flex-col gap-2">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Level</label>
+            <select 
+              value={newSkillLevel} 
+              onChange={e => setNewSkillLevel(e.target.value as any)} 
+              className="bg-slate-800/50 border border-white/10 rounded-lg p-3 font-medium text-slate-200 focus:outline-none focus:border-cyan-500"
+            >
+              <option value="Beginner">Beginner</option>
+              <option value="Intermediate">Intermediate</option>
+              <option value="Advanced">Advanced</option>
+              <option value="Expert">Expert</option>
+            </select>
+          </div>
+          <button onClick={addSkill} className="sm:self-end bg-purple-600/20 border border-purple-500/30 text-purple-300 p-3 rounded-lg font-semibold px-8 hover:bg-purple-500/30 transition-all ambient-glow">
+            Add Skill
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ExplorePage = ({ user }: { user: any }) => {
+  const [search, setSearch] = useState('');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [searching, setSearching] = useState(false);
+
+  // Fetch pending connection requests sent TO the current user
+  const [requestsSnap] = useCollection(
+    query(collection(db, 'connectionRequests'), where('toUid', '==', user.uid), where('status', '==', 'pending'))
+  );
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!search.trim()) return;
+    setSearching(true);
+    try {
+      // Simple prefix search on username
+      const q = query(
+        collection(db, 'users'), 
+        where('username', '>=', search.trim()), 
+        where('username', '<=', search.trim() + '\uf8ff'),
+        limit(10)
+      );
+      const snap = await getDocs(q);
+      // Sort by sessionCount to boost active users (AI recommendation simulation)
+      const results = snap.docs
+        .map(d => d.data())
+        .filter(u => u.uid !== user.uid)
+        .sort((a, b) => (b.sessionCount || 0) - (a.sessionCount || 0));
+      setSearchResults(results);
+    } catch (error) {
+      console.error("Search error:", error);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const sendRequest = async (toUid: string) => {
+    try {
+      await addDoc(collection(db, 'connectionRequests'), {
+        fromUid: user.uid,
+        fromName: user.displayName,
+        toUid,
+        status: 'pending',
+        createdAt: serverTimestamp()
+      });
+      alert('Connection request sent!');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'connectionRequests');
+    }
+  };
+
+  const handleRequest = async (docId: string, fromUid: string, action: 'accepted' | 'declined') => {
+    try {
+      await updateDoc(doc(db, 'connectionRequests', docId), { status: action });
+      if (action === 'accepted') {
+        await updateDoc(doc(db, 'users', user.uid), { connections: arrayUnion(fromUid) });
+        await updateDoc(doc(db, 'users', fromUid), { connections: arrayUnion(user.uid) });
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `connectionRequests/${docId} or users/${user.uid} or users/${fromUid}`);
     }
   };
 
   return (
-    <Card className="flex flex-col h-[600px] p-6 bg-gradient-to-br from-white to-[#fdfdfb] border-[#5A5A40]/20">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="bg-[#5A5A40] p-2 rounded-2xl text-white">
-          <BrainCircuit className="w-5 h-5" />
+    <div className="w-full max-w-5xl flex flex-col gap-8">
+      {/* Connection Requests */}
+      {requestsSnap && requestsSnap.docs.length > 0 && (
+        <div className="glass-panel border-beam p-6 ambient-glow scroll-fade">
+          <h3 className="text-2xl font-bold tracking-tight mb-4 flex items-center gap-2 text-slate-200">
+            <Users className="w-6 h-6 text-purple-400" /> Pending Requests
+          </h3>
+          <div className="flex flex-col gap-4">
+            {requestsSnap.docs.map(docSnap => {
+              const req = docSnap.data();
+              return (
+                <div key={docSnap.id} className="glass-panel border border-white/10 p-4 flex items-center justify-between">
+                  <span className="font-semibold text-lg text-slate-300">{req.fromName} wants to connect!</span>
+                  <div className="flex gap-2">
+                    <button onClick={() => handleRequest(docSnap.id, req.fromUid, 'accepted')} className="bg-cyan-600/20 text-cyan-300 border border-cyan-500/30 px-4 py-2 rounded-lg font-semibold hover:bg-cyan-500/30 transition-all ambient-glow">Accept</button>
+                    <button onClick={() => handleRequest(docSnap.id, req.fromUid, 'declined')} className="bg-slate-800/50 text-slate-300 border border-white/10 px-4 py-2 rounded-lg font-semibold hover:bg-slate-700/50 transition-all">Decline</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
-        <div>
-          <h3 className="font-bold text-lg">AI Study Assistant</h3>
-          <p className="text-[10px] text-gray-400 uppercase tracking-widest">Powered by Gemini 3.1 Pro</p>
+      )}
+
+      {/* Search */}
+      <div className="glass-panel border-beam p-8 ambient-glow scroll-fade" style={{ animationDelay: '0.1s' }}>
+        <h2 className="text-4xl font-bold tracking-tight mb-6 text-slate-200 tech-hover inline-block">Explore Network</h2>
+        <form onSubmit={handleSearch} className="flex gap-4 mb-8">
+          <input 
+            type="text" 
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by username..." 
+            className="flex-1 bg-slate-800/50 border border-white/10 rounded-lg p-4 font-medium text-lg text-slate-200 focus:outline-none focus:border-cyan-500"
+          />
+          <button type="submit" disabled={searching} className="bg-purple-600/20 border border-purple-500/30 text-purple-300 px-8 rounded-lg font-semibold hover:bg-purple-500/30 transition-all flex items-center gap-2 ambient-glow">
+            {searching ? <Loader2 className="w-6 h-6 animate-spin" /> : <Search className="w-6 h-6" />}
+            Search
+          </button>
+        </form>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {searchResults.map((u, i) => (
+            <div key={u.uid} className="glass-panel border border-white/10 p-6 flex flex-col gap-4 scroll-fade" style={{ animationDelay: `${i * 0.1}s` }}>
+              <div className="flex items-center gap-4">
+                <img src={u.photoURL} alt={u.username} className="w-16 h-16 rounded-full border border-white/10 object-cover" />
+                <div>
+                  <h3 className="font-bold text-xl text-slate-200">@{u.username}</h3>
+                  <p className="font-medium text-slate-400 text-sm">{u.displayName}</p>
+                </div>
+              </div>
+              <p className="font-medium text-sm line-clamp-2 text-slate-300">{u.bio}</p>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {u.skills?.slice(0, 3).map((s: any) => (
+                  <span key={s.name} className="text-[10px] font-semibold uppercase bg-slate-800/50 text-slate-300 border border-white/10 px-2 py-1 rounded-full">
+                    {s.name} ({s.level})
+                  </span>
+                ))}
+              </div>
+              <div className="flex items-center gap-4 mt-2">
+                {u.portfolioUrl && (
+                  <a href={u.portfolioUrl} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:text-cyan-300 transition-colors" title="Portfolio">
+                    <ExternalLink className="w-4 h-4" />
+                  </a>
+                )}
+                {u.learningPreference && (
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest bg-slate-800/30 px-2 py-1 rounded border border-white/5">
+                    {u.learningPreference}
+                  </span>
+                )}
+              </div>
+              <button onClick={() => sendRequest(u.uid)} className="mt-auto w-full py-2 bg-cyan-600/20 text-cyan-300 font-semibold rounded-lg border border-cyan-500/30 hover:bg-cyan-500/30 transition-colors flex items-center justify-center gap-2 ambient-glow">
+                <UserPlus className="w-4 h-4" /> Connect
+              </button>
+            </div>
+          ))}
+          {searchResults.length === 0 && search && !searching && (
+            <div className="col-span-full text-center py-8 font-semibold text-xl text-slate-500">No users found.</div>
+          )}
         </div>
       </div>
+    </div>
+  );
+};
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2 scrollbar-thin scrollbar-thumb-gray-200">
+const SessionsPage = ({ user }: { user: any }) => {
+  const [sessionsSnap] = useCollection(
+    query(collection(db, 'sessions'), where('participants', 'array-contains', user.uid), orderBy('createdAt', 'desc'))
+  );
+
+  return (
+    <div className="w-full max-w-4xl glass-panel border-beam p-8 ambient-glow scroll-fade">
+      <div className="flex items-center gap-4 mb-8 border-b border-white/10 pb-4">
+        <History className="w-10 h-10 text-cyan-400" />
+        <h2 className="text-4xl font-bold tracking-tight text-slate-200 tech-hover inline-block">Session History</h2>
+      </div>
+
+      <div className="flex flex-col gap-4">
+        {!sessionsSnap && <div className="font-semibold text-slate-400">Loading sessions...</div>}
+        {sessionsSnap?.docs.length === 0 && <div className="font-semibold text-slate-500">No past sessions found.</div>}
+        {sessionsSnap?.docs.map((docSnap, i) => {
+          const session = docSnap.data();
+          const date = session.createdAt?.toDate().toLocaleDateString() || 'Unknown Date';
+          return (
+            <div key={docSnap.id} className="glass-panel border border-white/10 p-6 flex flex-col gap-4 scroll-fade" style={{ animationDelay: `${i * 0.1}s` }}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-bold text-xl text-slate-200 mb-1">Study Session</h3>
+                  <p className="font-medium text-slate-400 text-sm">Date: {date}</p>
+                </div>
+                <div className="flex items-center gap-2 bg-teal-500/20 border border-teal-500/30 text-teal-300 px-4 py-2 rounded-lg font-semibold">
+                  <Check className="w-5 h-5" /> Completed
+                </div>
+              </div>
+              
+              {session.slideUrls && session.slideUrls.length > 0 && (
+                <div className="mt-2">
+                  <h4 className="font-bold mb-3 flex items-center gap-2 text-slate-200"><ImageIcon className="w-5 h-5 text-cyan-400"/> Captured Slides</h4>
+                  <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-thin scrollbar-thumb-slate-700">
+                    {session.slideUrls.map((url: string, idx: number) => (
+                      <img 
+                        key={idx} 
+                        src={url} 
+                        alt={`Slide ${idx + 1}`} 
+                        className="h-40 rounded-xl border border-white/10 shadow-2xl cursor-pointer hover:scale-105 transition-transform object-cover aspect-video"
+                        onClick={() => window.open(url, '_blank')}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {session.report && (
+                <div className="mt-4 pt-4 border-t border-white/10">
+                  <h4 className="font-bold mb-4 flex items-center gap-2 text-slate-200"><BrainCircuit className="w-5 h-5 text-purple-400"/> AI Session Report</h4>
+                  <div className="markdown-body prose prose-sm max-w-none font-medium bg-slate-800/50 p-4 rounded-xl border border-white/10 text-slate-300">
+                    <Markdown>{session.report}</Markdown>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+const AIDoubtSolver = ({ user }: { user: any }) => {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState('');
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { hasApiKey, handleSelectKey, setHasApiKey } = useApiKey();
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setImageFile(file);
+      setImagePreview(URL.createObjectURL(file));
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if ((!input.trim() && !imageFile) || loading) return;
+
+    const userMsg = input.trim();
+    setInput('');
+    
+    // Add user message to UI
+    const newMessage: Message = { role: 'user', text: userMsg + (imageFile ? '\n[Attached Image]' : '') };
+    setMessages(prev => [...prev, newMessage]);
+    setLoading(true);
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+      
+      let contents: any = { parts: [] };
+      
+      if (imageFile) {
+        const base64Data = await fileToBase64(imageFile);
+        contents.parts.push({ inlineData: { data: base64Data, mimeType: imageFile.type } });
+        setImageFile(null);
+        setImagePreview(null);
+      }
+      
+      if (userMsg) {
+        contents.parts.push({ text: userMsg });
+      }
+
+      // Add context
+      const contextText = messages.map(m => `${m.role}: ${m.text}`).join('\n');
+      if (contextText) {
+        contents.parts.unshift({ text: `Previous context:\n${contextText}\n\nNew query:` });
+      }
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.1-pro-preview',
+        contents: contents,
+        config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+          systemInstruction: "You are an expert AI teacher and doubt solver. Explain concepts clearly, step-by-step using **Markdown formatting**. Use bold text for key terms, bullet points for lists, and headings for different sections. If an image is provided, analyze it carefully to answer the student's question."
+        }
+      });
+
+      setMessages(prev => [...prev, { role: 'ai', text: response.text || 'No response generated.' }]);
+    } catch (error: any) {
+      console.error("Error generating response:", error);
+      const errorMessage = error.message || String(error);
+      
+      if (errorMessage.includes('PERMISSION_DENIED') || errorMessage.includes('Requested entity was not found')) {
+        setMessages(prev => [...prev, { role: 'ai', text: 'AI Doubt Solving requires a Gemini API key. Please select a valid key with billing enabled.' }]);
+        setHasApiKey(false);
+      } else {
+        setMessages(prev => [...prev, { role: 'ai', text: 'An error occurred while processing your request.' }]);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="w-full max-w-5xl glass-panel border-beam flex flex-col h-[85vh] overflow-hidden ambient-glow scroll-fade">
+      <div className="flex items-center justify-between p-6 border-b border-white/10 bg-slate-900/50">
+        <div className="flex items-center gap-3">
+          <BrainCircuit className="w-8 h-8 text-cyan-400 drop-shadow-[0_0_8px_rgba(34,211,238,0.8)]" />
+          <div>
+            <h2 className="font-bold text-2xl tracking-tight text-slate-200 tech-hover inline-block">AI Doubt Solver</h2>
+            <p className="font-medium text-sm text-slate-400">Your personal expert teacher powered by Gemini 3.1 Pro</p>
+          </div>
+        </div>
+        {!hasApiKey && (
+          <button 
+            onClick={handleSelectKey}
+            className="px-4 py-2 bg-amber-500/20 border border-amber-500/30 text-amber-400 rounded-lg text-xs font-bold hover:bg-amber-500/30 transition-all"
+          >
+            SELECT API KEY
+          </button>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-transparent">
         {messages.length === 0 && (
-          <div className="h-full flex flex-col items-center justify-center text-center p-6 opacity-40">
-            <Sparkles className="w-12 h-12 mb-4 text-[#5A5A40]" />
-            <p className="text-sm italic">"How can I help you master your engineering skills today?"</p>
+          <div className="h-full flex flex-col items-center justify-center text-center text-slate-400 space-y-4">
+            <BrainCircuit className="w-20 h-20 text-slate-600" />
+            <p className="max-w-md font-semibold text-xl text-slate-500">Ask a question or upload an image of your problem to get started.</p>
           </div>
         )}
         {messages.map((msg, i) => (
-          <div key={i} className={cn("flex flex-col", msg.role === 'user' ? "items-end" : "items-start")}>
+          <div key={i} className={cn("flex", msg.role === 'user' ? "justify-end" : "justify-start")}>
             <div className={cn(
-              "px-4 py-3 rounded-2xl text-sm max-w-[90%] break-words shadow-sm",
-              msg.role === 'user' ? "bg-[#5A5A40] text-white rounded-tr-none" : "bg-white border border-gray-100 text-[#1a1a1a] rounded-tl-none"
+              "max-w-[85%] p-4 rounded-2xl",
+              msg.role === 'user' ? "bg-cyan-600/20 text-cyan-100 border border-cyan-500/30 rounded-tr-sm" : "glass-panel border border-white/10 text-slate-300 rounded-tl-sm"
             )}>
-              {msg.text}
+              {msg.role === 'user' ? (
+                <p className="whitespace-pre-wrap font-medium">{msg.text}</p>
+              ) : (
+                <div className="markdown-body prose prose-sm max-w-none font-medium text-slate-300">
+                  <Markdown>{msg.text}</Markdown>
+                </div>
+              )}
             </div>
           </div>
         ))}
-        {isLoading && (
-          <div className="flex items-start gap-2">
-            <div className="bg-gray-100 px-4 py-2 rounded-2xl rounded-tl-none animate-pulse text-xs text-gray-400">
-              Thinking...
+        {loading && (
+          <div className="flex justify-start">
+            <div className="glass-panel border border-white/10 p-4 flex items-center gap-3 text-cyan-400 font-semibold rounded-2xl rounded-tl-sm">
+              <Loader2 className="w-5 h-5 animate-spin" />
+              <span>Analyzing & Thinking...</span>
             </div>
           </div>
         )}
+        <div ref={messagesEndRef} />
       </div>
 
-      <form onSubmit={handleSend} className="flex gap-2">
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask anything about your studies..."
-          className="flex-1 bg-[#f5f5f0] border-none rounded-2xl px-4 py-3 text-sm focus:ring-2 focus:ring-[#5A5A40] outline-none"
-        />
-        <button
-          type="submit"
-          disabled={!input.trim() || isLoading}
-          className="p-3 bg-[#5A5A40] text-white rounded-2xl hover:bg-[#4A4A30] transition-all disabled:opacity-50 shadow-md active:scale-95"
-        >
-          <Send className="w-5 h-5" />
-        </button>
-      </form>
-    </Card>
-  );
-};
-
-const AILab = ({ user }: { user: any }) => {
-  const [image, setImage] = useState<string | null>(null);
-  const [analysis, setAnalysis] = useState<string | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
-  const [videoPrompt, setVideoPrompt] = useState('');
-
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setImage(reader.result as string);
-        setAnalysis(null);
-        setVideoUrl(null);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const analyzeImage = async () => {
-    if (!image) return;
-    setIsAnalyzing(true);
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
-      const base64Data = image.split(',')[1];
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
-        contents: [
-          {
-            parts: [
-              { text: "Analyze this image in the context of engineering or science studies. What concepts are shown, and how can a student learn more about them?" },
-              { inlineData: { data: base64Data, mimeType: "image/jpeg" } }
-            ]
-          }
-        ],
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }
-        }
-      });
-      setAnalysis(response.text || 'No analysis available.');
-    } catch (error) {
-      console.error("Analysis Error:", error);
-      setAnalysis("Failed to analyze image.");
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const generateVideo = async () => {
-    if (!image) return;
-    setIsGeneratingVideo(true);
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
-      const base64Data = image.split(',')[1];
-      
-      let operation = await ai.models.generateVideos({
-        model: 'veo-3.1-lite-generate-preview',
-        prompt: videoPrompt || 'Animate this scientific concept with smooth motion',
-        image: {
-          imageBytes: base64Data,
-          mimeType: 'image/jpeg',
-        },
-        config: {
-          numberOfVideos: 1,
-          resolution: '720p',
-          aspectRatio: '16:9'
-        }
-      });
-
-      while (!operation.done) {
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        operation = await ai.operations.getVideosOperation({ operation });
-      }
-
-      const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-      if (downloadLink) {
-        const response = await fetch(downloadLink, {
-          headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY as string }
-        });
-        const blob = await response.blob();
-        setVideoUrl(URL.createObjectURL(blob));
-      }
-    } catch (error) {
-      console.error("Video Generation Error:", error);
-    } finally {
-      setIsGeneratingVideo(false);
-    }
-  };
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-      <Card className="p-8">
-        <div className="flex items-center gap-3 mb-8">
-          <div className="bg-[#0080FF] p-2 border-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] text-white">
+      <div className="p-4 border-t border-white/10 bg-slate-900/50">
+        {imagePreview && (
+          <div className="mb-4 relative inline-block">
+            <img src={imagePreview} alt="Upload preview" className="h-24 rounded-lg border border-white/10 shadow-[0_0_15px_rgba(0,0,0,0.5)]" />
+            <button onClick={() => { setImageFile(null); setImagePreview(null); }} className="absolute -top-2 -right-2 bg-slate-800 border border-white/10 rounded-full p-1 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+        <form onSubmit={handleSubmit} className="flex items-end gap-2">
+          <label className="p-4 bg-purple-600/20 border border-purple-500/30 text-purple-400 rounded-xl cursor-pointer hover:bg-purple-500/30 transition-all ambient-glow">
             <ImageIcon className="w-6 h-6" />
-          </div>
-          <h2 className="text-2xl font-black uppercase tracking-tighter">Visual Study Lab</h2>
-        </div>
-
-        <div className="space-y-6">
-          <div 
-            className="aspect-video bg-white border-4 border-dashed border-black flex flex-col items-center justify-center relative overflow-hidden group cursor-pointer shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]"
-            onClick={() => document.getElementById('image-upload')?.click()}
+            <input type="file" accept="image/*" className="hidden" onChange={handleImageChange} />
+          </label>
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Type your question..."
+            className="flex-1 bg-slate-800/50 border border-white/10 rounded-xl py-4 pl-4 pr-4 font-medium text-slate-200 focus:outline-none focus:border-cyan-500"
+            disabled={loading}
+          />
+          <button 
+            type="submit" 
+            disabled={(!input.trim() && !imageFile) || loading}
+            className="p-4 bg-cyan-600/20 text-cyan-400 border border-cyan-500/30 rounded-xl disabled:opacity-50 hover:bg-cyan-500/30 transition-all ambient-glow"
           >
-            {image ? (
-              <img src={image} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-            ) : (
-              <>
-                <Plus className="w-12 h-12 text-gray-300 mb-2 group-hover:scale-110 transition-transform" />
-                <p className="text-sm text-gray-400">Upload diagram or photo</p>
-              </>
-            )}
-            <input id="image-upload" type="file" hidden accept="image/*" onChange={handleImageUpload} />
-          </div>
-
-          <div className="flex gap-4">
-            <Button 
-              className="flex-1" 
-              disabled={!image || isAnalyzing} 
-              onClick={analyzeImage}
-            >
-              {isAnalyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-              Analyze Concepts
-            </Button>
-            <Button 
-              variant="secondary" 
-              className="flex-1" 
-              disabled={!image || isGeneratingVideo} 
-              onClick={generateVideo}
-            >
-              {isGeneratingVideo ? <Loader2 className="w-4 h-4 animate-spin" /> : <Film className="w-4 h-4" />}
-              Animate with Veo
-            </Button>
-          </div>
-
-          {isGeneratingVideo && (
-            <div className="p-4 bg-[#0080FF] border-2 border-black text-white text-xs font-black uppercase tracking-tighter animate-pulse shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-              Veo is carefully animating your image... this may take a minute.
-            </div>
-          )}
-
-          {analysis && (
-            <div className="p-6 bg-white border-4 border-black text-sm leading-relaxed text-black font-bold shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
-              <h4 className="font-black text-black mb-2 flex items-center gap-2 uppercase tracking-tighter">
-                <BrainCircuit className="w-4 h-4 text-[#0080FF]" />
-                AI Analysis
-              </h4>
-              {analysis}
-            </div>
-          )}
-
-          {videoUrl && (
-            <div className="space-y-2">
-              <h4 className="font-black text-black flex items-center gap-2 uppercase tracking-tighter">
-                <Film className="w-4 h-4 text-[#FF80BF]" />
-                Generated Animation
-              </h4>
-              <video src={videoUrl} controls className="w-full border-4 border-black shadow-[12px_12px_0px_0px_rgba(0,0,0,1)]" />
-            </div>
-          )}
-        </div>
-      </Card>
-
-      <AIAssistant user={user} />
+            <Send className="w-6 h-6" />
+          </button>
+        </form>
+      </div>
     </div>
   );
 };
 
-const VoiceAssistant = ({ onClose }: { onClose: () => void }) => {
-  const [status, setStatus] = useState('Connecting...');
-  const [isListening, setIsListening] = useState(false);
-  const sessionRef = useRef<any>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
+const Dashboard = ({ user, onJoinRoom }: { user: any, onJoinRoom: (roomId: string) => void }) => {
+  const [userData] = useDocumentData(doc(db, 'users', user.uid));
+  const [onlineConnections, setOnlineConnections] = useState<any[]>([]);
+  const [joinRoomId, setJoinRoomId] = useState('');
+  
+  // Post Modal State
+  const [showPostModal, setShowPostModal] = useState(false);
+  const [postType, setPostType] = useState<'teach'|'learn'>('teach');
+  const [postSkill, setPostSkill] = useState('');
+  const [postDesc, setPostDesc] = useState('');
+  const [postTiming, setPostTiming] = useState('');
+  const [postDuration, setPostDuration] = useState('');
+  const [postLevel, setPostLevel] = useState('Beginner');
+  const [postLanguage, setPostLanguage] = useState('English');
+
+  // Fetch Posts
+  const [postsSnap] = useCollection(query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(20)));
 
   useEffect(() => {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
-    
-    const connect = async () => {
-      try {
-        const session = await ai.live.connect({
-          model: "gemini-2.5-flash-native-audio-preview-12-2025",
-          config: {
-            responseModalities: [Modality.AUDIO],
-            systemInstruction: "You are a helpful study buddy. Speak naturally and help the user with their science and engineering questions through voice.",
-          },
-          callbacks: {
-            onopen: () => {
-              setStatus('Connected - Ready to talk');
-              setIsListening(true);
-            },
-            onmessage: async (message) => {
-              const audioData = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-              if (audioData) {
-                playAudio(audioData);
-              }
-            },
-            onclose: () => setStatus('Disconnected'),
-            onerror: (err) => console.error("Live Error:", err),
-          }
-        });
-        sessionRef.current = session;
-      } catch (err) {
-        console.error("Connection Error:", err);
-        setStatus('Connection Failed');
-      }
-    };
-
-    connect();
-    return () => {
-      sessionRef.current?.close();
-      audioContextRef.current?.close();
-    };
-  }, []);
-
-  const playAudio = async (base64: string) => {
-    if (!audioContextRef.current) {
-      audioContextRef.current = new AudioContext({ sampleRate: 24000 });
+    if (!userData?.connections || userData.connections.length === 0) {
+      setOnlineConnections([]);
+      return;
     }
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    
-    // Simple PCM playback logic would go here
-    // For brevity, we'll assume the user can hear the response
+    // Fetch online users from connections list
+    const q = query(
+      collection(db, 'users'), 
+      where('uid', 'in', userData.connections.slice(0, 10)), // Firestore 'in' limit is 10
+      where('isOnline', '==', true)
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setOnlineConnections(snap.docs.map(d => d.data()));
+    });
+    return () => unsub();
+  }, [userData?.connections]);
+
+  const startPrivateRoom = async (peerUid: string) => {
+    // Create a unique room ID for these two users
+    const roomId = [user.uid, peerUid].sort().join('_');
+    const roomRef = doc(db, 'rooms', roomId);
+    const snap = await getDoc(roomRef);
+    if (!snap.exists()) {
+      await setDoc(roomRef, {
+        roomId,
+        hostId: user.uid,
+        coHostIds: [peerUid],
+        participants: [user.uid],
+        createdAt: serverTimestamp(),
+        isActive: true
+      });
+    }
+    onJoinRoom(roomId);
   };
 
-  return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[400] flex items-center justify-center">
-      <motion.div 
-        initial={{ scale: 0.9, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        className="bg-white border-8 border-black p-12 w-[450px] text-center shadow-[16px_16px_0px_0px_rgba(0,0,0,1)]"
-      >
-        <div className="mb-8 flex justify-center">
-          <div className="relative">
-            <div className="absolute inset-0 bg-[#0080FF] animate-ping opacity-20" />
-            <div className="relative bg-[#0080FF] border-4 border-black p-8 text-white shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
-              <Volume2 className="w-12 h-12" />
-            </div>
-          </div>
-        </div>
-        <h2 className="text-4xl font-black uppercase tracking-tighter mb-2">Voice Assistant</h2>
-        <p className="text-sm text-gray-400 mb-8 font-bold uppercase tracking-widest">{status}</p>
-        
-        <div className="flex flex-col gap-4">
-          <div className="flex justify-center gap-2">
-            {[1, 2, 3, 4, 5].map(i => (
-              <motion.div
-                key={i}
-                animate={{ height: isListening ? [10, 40, 10] : 10 }}
-                transition={{ duration: 0.5, repeat: Infinity, delay: i * 0.1 }}
-                className="w-2 bg-black"
-              />
-            ))}
-          </div>
-          <Button variant="secondary" onClick={onClose} className="mt-8 bg-[#FF80BF] border-4 border-black text-black font-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-            End Conversation
-          </Button>
-        </div>
-      </motion.div>
-    </div>
-  );
-};
+  const createGroupRoom = async () => {
+    const roomId = 'room_' + Math.random().toString(36).substring(2, 9);
+    await setDoc(doc(db, 'rooms', roomId), {
+      roomId,
+      hostId: user.uid,
+      participants: [user.uid],
+      createdAt: serverTimestamp(),
+      isActive: true
+    });
+    onJoinRoom(roomId);
+  };
 
-const Chat = ({ user }: { user: any }) => {
-  const [messagesSnapshot] = useCollection(
-    query(collection(db, 'messages'), orderBy('createdAt', 'desc'), limit(50))
-  );
-  const messages = messagesSnapshot?.docs.map(doc => ({ id: doc.id, ...doc.data() })).reverse();
-  const [newMessage, setNewMessage] = useState('');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages]);
-
-  const handleSendMessage = async (e?: React.FormEvent) => {
-    e?.preventDefault();
-    if (!newMessage.trim()) return;
-
-    const text = newMessage;
-    setNewMessage('');
-
-    // AI Moderation
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
-      const modResponse = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `Is the following message appropriate for a student study room? Answer with 'SAFE' or 'UNSAFE' only: "${text}"`,
-      });
-      
-      if (modResponse.text?.toUpperCase().includes('UNSAFE')) {
-        console.warn("Message flagged as unsafe:", text);
+  const handleJoinSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!joinRoomId.trim()) return;
+    const roomRef = doc(db, 'rooms', joinRoomId.trim());
+    const snap = await getDoc(roomRef);
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data.participants && data.participants.length >= 15 && !data.participants.includes(user.uid)) {
+        alert("Room is full (max 15 participants).");
         return;
       }
-    } catch (error) {
-      console.error("Moderation error:", error);
-    }
-
-    try {
-      await addDoc(collection(db, 'messages'), {
-        authorUid: user.uid,
-        authorName: user.displayName,
-        authorPhoto: user.photoURL,
-        text,
-        createdAt: serverTimestamp(),
-      });
-    } catch (error) {
-      console.error("Error sending message:", error);
+      onJoinRoom(joinRoomId.trim());
+    } else {
+      alert("Room not found.");
     }
   };
 
-  const getIcebreaker = async () => {
-    if (isGenerating) return;
-    setIsGenerating(true);
+  const handleCreatePost = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!postSkill.trim()) return;
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: "Give me 3 fun, short academic icebreaker questions for a student study room chat. Return them as a JSON array of strings only. e.g. ['What's the weirdest thing you've learned today?', 'Coffee or tea for late night study?', 'Best study hack you know?']",
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING }
-          }
-        }
+      await addDoc(collection(db, 'posts'), {
+        authorUid: user.uid,
+        authorName: userData?.displayName || user.displayName,
+        authorPhoto: userData?.photoURL || user.photoURL,
+        type: postType,
+        skill: postSkill.trim(),
+        description: postDesc.trim(),
+        timing: postTiming.trim(),
+        duration: postDuration.trim(),
+        level: postLevel,
+        language: postLanguage.trim(),
+        learningPreference: userData?.learningPreference || 'visual',
+        createdAt: serverTimestamp()
       });
-      const data = JSON.parse(response.text);
-      setSuggestions(data);
+      setShowPostModal(false);
+      setPostSkill('');
+      setPostDesc('');
+      setPostTiming('');
+      setPostDuration('');
+      setPostLevel('Beginner');
+      setPostLanguage('English');
     } catch (error) {
-      console.error("AI Error:", error);
-    } finally {
-      setIsGenerating(false);
+      handleFirestoreError(error, OperationType.CREATE, 'posts');
     }
   };
 
-  const sendSuggestion = async (text: string) => {
-    setSuggestions([]);
-    try {
-      await addDoc(collection(db, 'messages'), {
-        authorUid: user.uid,
-        authorName: user.displayName,
-        authorPhoto: user.photoURL,
-        text,
+  const joinPostRoom = async (postId: string, authorUid: string) => {
+    const roomRef = doc(db, 'rooms', postId);
+    const snap = await getDoc(roomRef);
+    if (!snap.exists()) {
+      await setDoc(roomRef, {
+        roomId: postId,
+        hostId: authorUid,
+        participants: [user.uid],
         createdAt: serverTimestamp(),
+        isActive: true
       });
-    } catch (error) {
-      console.error("Error sending suggestion:", error);
     }
+    onJoinRoom(postId);
   };
 
   return (
-    <Card className="flex flex-col h-[600px] p-4">
-      <div className="flex items-center justify-between mb-4 px-2">
-        <div className="flex items-center gap-2">
-          <MessageSquare className="w-4 h-4 text-[#5A5A40]" />
-          <h3 className="text-sm font-bold uppercase tracking-widest font-sans text-gray-400">Study Room Chat</h3>
-        </div>
-        <button
-          onClick={getIcebreaker}
-          disabled={isGenerating}
-          className="p-2 text-[#5A5A40] hover:bg-[#f5f5f0] rounded-full transition-colors disabled:opacity-50"
-          title="AI Icebreaker"
-        >
-          <Wand2 className={cn("w-4 h-4", isGenerating && "animate-pulse")} />
-        </button>
-      </div>
-
-      <div
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2 scrollbar-thin scrollbar-thumb-gray-200"
-      >
-        {messages?.map((msg: any) => (
-          <div key={msg.id} className={cn("flex flex-col", msg.authorUid === user.uid ? "items-end" : "items-start")}>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-[10px] font-bold text-gray-400">{msg.authorName}</span>
-            </div>
-            <div className={cn(
-              "px-4 py-2 border-2 border-black text-sm max-w-[85%] break-words shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]",
-              msg.authorUid === user.uid ? "bg-[#C0A0FF] text-black" : "bg-white text-black"
-            )}>
-              {msg.text}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {suggestions.length > 0 && (
-        <div className="mb-4 space-y-2">
-          <p className="text-[10px] font-bold text-[#5A5A40] uppercase tracking-widest mb-2">AI Suggestions:</p>
-          <div className="flex flex-wrap gap-2">
-            {suggestions.map((s, i) => (
-              <button
-                key={i}
-                onClick={() => sendSuggestion(s)}
-                className="text-[11px] bg-white border border-[#e5e5e0] px-3 py-1.5 rounded-full hover:bg-[#f5f5f0] transition-all text-left"
-              >
-                {s}
-              </button>
-            ))}
-            <button 
-              onClick={() => setSuggestions([])}
-              className="text-[11px] text-gray-400 hover:text-gray-600 px-2"
-            >
-              Dismiss
-            </button>
+    <div className="w-full max-w-7xl flex flex-col lg:flex-row gap-8 relative">
+      {/* Post Modal */}
+      {showPostModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="glass-panel border-beam p-6 w-full max-w-md ambient-glow">
+            <h2 className="text-2xl font-bold tracking-tight mb-4 text-slate-200">Post a Skill</h2>
+            <form onSubmit={handleCreatePost} className="flex flex-col gap-4">
+              <div>
+                <label className="font-semibold text-sm text-slate-400">Type</label>
+                <select value={postType} onChange={e => setPostType(e.target.value as 'teach'|'learn')} className="w-full bg-slate-800/50 border border-white/10 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-cyan-500">
+                  <option value="teach">Offering (Teach)</option>
+                  <option value="learn">Requesting (Learn)</option>
+                </select>
+              </div>
+              <div>
+                <label className="font-semibold text-sm text-slate-400">Skill</label>
+                <div className="flex gap-2">
+                  <input type="text" value={postSkill} onChange={e => setPostSkill(e.target.value)} placeholder="e.g. C++, React, Math" className="flex-1 bg-slate-800/50 border border-white/10 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-cyan-500" required />
+                  <select value={postLevel} onChange={e => setPostLevel(e.target.value)} className="bg-slate-800/50 border border-white/10 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-cyan-500 text-xs font-bold uppercase">
+                    <option value="Beginner">Beginner</option>
+                    <option value="Intermediate">Intermediate</option>
+                    <option value="Advanced">Advanced</option>
+                    <option value="Expert">Expert</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="font-semibold text-sm text-slate-400">Language</label>
+                <input type="text" value={postLanguage} onChange={e => setPostLanguage(e.target.value)} placeholder="e.g. English, Hindi, Spanish" className="w-full bg-slate-800/50 border border-white/10 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-cyan-500" />
+              </div>
+              <div>
+                <label className="font-semibold text-sm text-slate-400">Description</label>
+                <textarea value={postDesc} onChange={e => setPostDesc(e.target.value)} placeholder="What exactly?" className="w-full bg-slate-800/50 border border-white/10 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-cyan-500" rows={3} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="font-semibold text-sm text-slate-400">Timing</label>
+                  <input type="text" value={postTiming} onChange={e => setPostTiming(e.target.value)} placeholder="e.g. 6 PM Today" className="w-full bg-slate-800/50 border border-white/10 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-cyan-500" />
+                </div>
+                <div>
+                  <label className="font-semibold text-sm text-slate-400">Duration</label>
+                  <input type="text" value={postDuration} onChange={e => setPostDuration(e.target.value)} placeholder="e.g. 45 mins" className="w-full bg-slate-800/50 border border-white/10 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-cyan-500" />
+                </div>
+              </div>
+              <div className="flex gap-2 mt-4">
+                <button type="submit" className="flex-1 bg-cyan-600/20 border border-cyan-500/30 text-cyan-300 py-2 rounded-lg font-semibold hover:bg-cyan-500/30 transition-all ambient-glow">Post</button>
+                <button type="button" onClick={() => setShowPostModal(false)} className="flex-1 bg-slate-800/50 border border-white/10 text-slate-300 py-2 rounded-lg font-semibold hover:bg-slate-700/50 transition-all">Cancel</button>
+              </div>
+            </form>
           </div>
         </div>
       )}
 
-      <form onSubmit={handleSendMessage} className="flex gap-2">
-        <input
-          value={newMessage}
-          onChange={(e) => setNewMessage(e.target.value)}
-          placeholder="Type a message..."
-          className="flex-1 bg-white border-4 border-black px-4 py-2 text-sm font-black focus:outline-none shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
-        />
-        <button
-          type="submit"
-          disabled={!newMessage.trim()}
-          className="p-3 bg-[#FF80BF] border-4 border-black text-black hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] disabled:opacity-50"
-        >
-          <Send className="w-4 h-4" />
-        </button>
-      </form>
-    </Card>
+      {/* Left Column */}
+      <div className="w-full lg:w-1/4 flex flex-col gap-6">
+        <div className="glass-panel border-beam p-6 flex flex-col ambient-glow scroll-fade">
+          <div className="flex justify-between items-start mb-6">
+            <h2 className="text-xl font-bold text-slate-200 tech-hover inline-block">Your Desk</h2>
+            <Coffee className="w-5 h-5 text-cyan-400" />
+          </div>
+          <div className="mb-4">
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1">Username</p>
+            <p className="font-medium text-slate-300">@{userData?.username}</p>
+          </div>
+          <div className="mb-8">
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2">Teaching</p>
+            <div className="flex flex-wrap gap-2">
+              {userData?.skills?.slice(0, 3).map((s: any) => (
+                <span key={s.name} className="inline-block px-3 py-1 bg-slate-800/50 border border-white/10 rounded-full text-[10px] font-bold text-slate-300 uppercase tracking-tight">
+                  {s.name} <span className="text-cyan-500 ml-1 opacity-70">{s.level}</span>
+                </span>
+              ))}
+              {(!userData?.skills || userData.skills.length === 0) && <span className="text-xs font-semibold text-slate-500">None yet</span>}
+            </div>
+          </div>
+        </div>
+
+        <div className="glass-panel border border-white/10 p-6 flex flex-col scroll-fade" style={{ animationDelay: '0.1s' }}>
+          <h2 className="text-xl font-bold text-slate-200 mb-4 tech-hover inline-block">AI Matchmaker</h2>
+          <p className="text-sm font-medium text-slate-400 mb-6">
+            "We found 3 students who want to learn what you teach."
+          </p>
+          <button className="w-full py-3 bg-purple-600/20 border border-purple-500/30 text-purple-300 rounded-lg font-semibold hover:bg-purple-500/30 transition-all ambient-glow">
+            View Matches
+          </button>
+        </div>
+      </div>
+
+      {/* Middle Column */}
+      <div className="w-full lg:w-2/4 flex flex-col gap-6">
+        <div className="flex justify-between items-center">
+          <h2 className="text-3xl font-bold tracking-tight text-slate-200 tech-hover inline-block">Bulletin Board</h2>
+          <button onClick={() => setShowPostModal(true)} className="px-6 py-3 bg-cyan-600/20 border border-cyan-500/30 text-cyan-300 rounded-lg font-semibold flex items-center gap-2 hover:bg-cyan-500/30 transition-all ambient-glow">
+            <Plus className="w-4 h-4" /> Post a Skill
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-6 overflow-y-auto max-h-[800px] pr-2">
+          {postsSnap?.docs.map((docSnap, i) => {
+            const post = docSnap.data();
+            const date = post.createdAt?.toDate().toLocaleDateString() || 'Just now';
+            return (
+              <div key={docSnap.id} className="glass-panel border-beam p-6 ambient-glow scroll-fade" style={{ animationDelay: `${i * 0.1}s` }}>
+                <div className="flex justify-between items-start mb-6">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full border border-white/10 overflow-hidden bg-slate-800">
+                      <img src={post.authorPhoto || `https://api.dicebear.com/7.x/avataaars/svg?seed=${post.authorUid}`} alt="Avatar" className="w-full h-full object-cover" />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-slate-200">{post.authorName}</h3>
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest">{post.type === 'teach' ? 'Offering' : 'Requesting'}</p>
+                    </div>
+                  </div>
+                  <span className={cn("px-3 py-1 border rounded-full text-xs font-semibold", post.type === 'teach' ? "bg-teal-500/20 text-teal-300 border-teal-500/30" : "bg-purple-500/20 text-purple-300 border-purple-500/30")}>{post.skill}</span>
+                </div>
+                <div className="flex justify-between items-center mb-8">
+                  <div className="flex flex-col gap-3 w-full">
+                    <div className="bg-slate-800/30 border border-white/5 p-4 rounded-xl">
+                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em] mb-1">Topic / Description</p>
+                      <h4 className="text-2xl font-medium text-slate-200">{post.description}</h4>
+                    </div>
+                    <div className="flex flex-wrap gap-4 mt-1">
+                      {post.level && (
+                        <div className="flex items-center gap-1.5 text-slate-400">
+                          <BrainCircuit className="w-4 h-4 text-purple-400" />
+                          <span className="text-[10px] font-bold uppercase tracking-widest">{post.level}</span>
+                        </div>
+                      )}
+                      {post.timing && (
+                        <div className="flex items-center gap-1.5 text-slate-400">
+                          <Clock className="w-4 h-4 text-cyan-400" />
+                          <span className="text-xs font-semibold uppercase tracking-wider">{post.timing}</span>
+                        </div>
+                      )}
+                      {post.duration && (
+                        <div className="flex items-center gap-1.5 text-slate-400">
+                          <Timer className="w-4 h-4 text-purple-400" />
+                          <span className="text-xs font-semibold uppercase tracking-wider">{post.duration}</span>
+                        </div>
+                      )}
+                      {post.learningPreference && (
+                        <div className="flex items-center gap-1.5 text-slate-400">
+                          <GraduationCap className="w-4 h-4 text-amber-400" />
+                          <span className="text-[10px] font-bold uppercase tracking-widest">{post.learningPreference}</span>
+                        </div>
+                      )}
+                      {post.language && (
+                        <div className="flex items-center gap-1.5 text-slate-400">
+                          <Volume2 className="w-4 h-4 text-green-400" />
+                          <span className="text-[10px] font-bold uppercase tracking-widest">{post.language}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex justify-between items-center pt-4 border-t border-white/10">
+                  <span className="text-xs font-semibold text-slate-500">{date}</span>
+                  <div className="flex gap-4">
+                    <button onClick={() => joinPostRoom(docSnap.id, post.authorUid)} className="px-4 py-1.5 bg-cyan-600/20 border border-cyan-500/30 text-cyan-300 rounded-lg text-xs font-bold uppercase tracking-widest flex items-center gap-2 hover:bg-cyan-500/30 transition-all ambient-glow">
+                      <Video className="w-4 h-4" /> Join Call
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          {postsSnap?.docs.length === 0 && (
+            <div className="text-center py-8 font-semibold text-slate-500">No posts yet. Be the first!</div>
+          )}
+        </div>
+      </div>
+
+      {/* Right Column */}
+      <div className="w-full lg:w-1/4 flex flex-col gap-6">
+        {/* Group Rooms Card */}
+        <div className="glass-panel border-beam p-6 flex flex-col gap-4 ambient-glow scroll-fade" style={{ animationDelay: '0.2s' }}>
+          <h2 className="font-semibold uppercase tracking-widest text-sm text-slate-400 border-b border-white/10 pb-2 tech-hover inline-block">Group Study (Max 15)</h2>
+          <button onClick={createGroupRoom} className="w-full py-2 bg-cyan-600/20 border border-cyan-500/30 text-cyan-300 rounded-lg font-semibold flex items-center justify-center gap-2 hover:bg-cyan-500/30 transition-all ambient-glow">
+            <Video className="w-4 h-4" /> Create Room
+          </button>
+          <form onSubmit={handleJoinSubmit} className="flex gap-2">
+            <input type="text" value={joinRoomId} onChange={e => setJoinRoomId(e.target.value)} placeholder="Room ID" className="flex-1 bg-slate-800/50 border border-white/10 rounded-lg p-2 text-xs font-semibold text-slate-200 focus:outline-none focus:border-cyan-500" />
+            <button type="submit" className="bg-slate-800/50 border border-white/10 text-slate-300 px-3 rounded-lg font-semibold hover:bg-slate-700/50 transition-colors">Join</button>
+          </form>
+        </div>
+
+        {/* Online Connections Card */}
+        <div className="glass-panel border border-white/10 p-6 flex flex-col h-full min-h-[300px] scroll-fade" style={{ animationDelay: '0.3s' }}>
+          <h2 className="font-semibold uppercase tracking-widest text-sm text-slate-400 mb-6 border-b border-white/10 pb-2 tech-hover inline-block">Online Connections ({onlineConnections.length})</h2>
+          <div className="flex flex-col gap-4 flex-1 overflow-y-auto">
+            {onlineConnections.length === 0 && (
+              <p className="text-sm font-semibold text-slate-500 italic">No connections online right now.</p>
+            )}
+            {onlineConnections.map(conn => (
+              <div key={conn.uid} className="flex items-center justify-between group">
+                <div className="flex items-center gap-3">
+                  <div className="relative">
+                    <img src={conn.photoURL} className="w-10 h-10 rounded-full border border-white/10 object-cover" />
+                    <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-slate-900 rounded-full shadow-[0_0_8px_rgba(34,197,94,0.8)]" />
+                  </div>
+                  <span className="font-semibold text-sm text-slate-300">@{conn.username}</span>
+                </div>
+                <button 
+                  onClick={() => startPrivateRoom(conn.uid)}
+                  className="opacity-0 group-hover:opacity-100 p-2 bg-cyan-600/20 border border-cyan-500/30 text-cyan-300 rounded-full hover:scale-110 transition-all ambient-glow"
+                  title="Start Private Video Chat"
+                >
+                  <Video className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 };
 
-const VideoRoom = ({ roomId, user, onLeave, onSessionEnd }: { 
-  roomId: string, 
-  user: any, 
-  onLeave: () => void,
-  onSessionEnd?: (duration: number, participants: string[]) => void 
-}) => {
-  const [peers, setPeers] = useState<any[]>([]);
-  const socketRef = useRef<any>(null);
-  const userVideo = useRef<HTMLVideoElement>(null);
-  const peersRef = useRef<any[]>([]);
-  const [stream, setStream] = useState<MediaStream | null>(null);
-  const [isMicOn, setIsMicOn] = useState(true);
-  const [isCamOn, setIsCamOn] = useState(true);
-  const [videoQuality, setVideoQuality] = useState<'high' | 'medium' | 'low'>('high');
+const VideoRoom = ({ user, roomId, onLeave }: { user: any, roomId: string, onLeave: (tab?: string) => void }) => {
+  const [messagesSnap] = useCollection(
+    query(collection(db, 'messages'), where('roomId', '==', roomId), orderBy('createdAt', 'asc'))
+  );
+  const [roomSnap, roomLoading] = useDocumentData(doc(db, 'rooms', roomId));
+  const isHost = roomSnap?.hostId === user.uid;
   
-  const [isHandRaised, setIsHandRaised] = useState(false);
-  const [roomMessages, setRoomMessages] = useState<any[]>([]);
-  const [showChat, setShowChat] = useState(false);
-  const [showWhiteboard, setShowWhiteboard] = useState(false);
-  const [whiteboardSnapshots, setWhiteboardSnapshots] = useState<string[]>([]);
-  const [showSummary, setShowSummary] = useState(false);
+  const [waitingUserSnap, waitingLoading] = useDocumentData(doc(db, 'rooms', roomId, 'waitingUsers', user.uid));
+  const [waitingUsersSnap] = useCollection(
+    isHost ? query(collection(db, 'rooms', roomId, 'waitingUsers'), where('status', '==', 'waiting')) : null
+  );
+  
+  const [hasJoined, setHasJoined] = useState(false);
+  const { hasApiKey, handleSelectKey, setHasApiKey } = useApiKey();
+
+  const [input, setInput] = useState('');
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Media States
+  const [isMicOn, setIsMicOn] = useState(true);
+  const [isVideoOn, setIsVideoOn] = useState(true);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const [raisedHands, setRaisedHands] = useState<Set<string>>(new Set());
-  const [hostId, setHostId] = useState<string | null>(null);
-  const [coHostIds, setCoHostIds] = useState<string[]>([]);
-  const [isAdmitted, setIsAdmitted] = useState(false);
-  const [waitingUsers, setWaitingUsers] = useState<any[]>([]);
-  const [isDenied, setIsDenied] = useState(false);
-  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
-  const [roomPassword, setRoomPassword] = useState<string | null>(null);
-  const [isPasswordVerified, setIsPasswordVerified] = useState(false);
-  const [passwordInput, setPasswordInput] = useState('');
-  const [passwordError, setPasswordError] = useState(false);
-  const [selectedBackground, setSelectedBackground] = useState<string | null>(null);
-  const [showBackgroundOptions, setShowBackgroundOptions] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [sessionDuration, setSessionDuration] = useState(0);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
+  const [isAnnotating, setIsAnnotating] = useState(false);
+  const [isVirtualBg, setIsVirtualBg] = useState(false);
+  const [bgType, setBgType] = useState<'blur' | 'color' | 'image'>('blur');
+  const [bgColor, setBgColor] = useState('#000000');
+  const [bgImage, setBgImage] = useState<string | null>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [isWhiteboardOn, setIsWhiteboardOn] = useState(false);
+  const [strokeColor, setStrokeColor] = useState('#FFD700');
+  const [strokeWidth, setStrokeWidth] = useState(6);
+  
+  // AI Report States
+  const [slides, setSlides] = useState<string[]>([]);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const bgCanvasRef = useRef<HTMLCanvasElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const processingRef = useRef<boolean>(false);
-  const segmentationRef = useRef<SelfieSegmentation | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const cameraRef = useRef<MediaPipeCamera | null>(null);
+  const selfieSegmentationRef = useRef<SelfieSegmentation | null>(null);
   const bgImageRef = useRef<HTMLImageElement | null>(null);
+  const bgSettingsRef = useRef({ type: bgType, color: bgColor, image: bgImageRef.current });
 
   useEffect(() => {
-    if (!selectedBackground || !stream || isScreenSharing) {
-      if (processingRef.current) {
-        processingRef.current = false;
-        bgImageRef.current = null;
-        // Restore original stream to video element
-        if (userVideo.current) {
-          userVideo.current.srcObject = stream;
-        }
-        // Update peers with original track
-        const originalTrack = stream?.getVideoTracks()[0];
-        if (originalTrack) {
-          peersRef.current.forEach(({ peer }) => {
-            const sender = peer._pc.getSenders().find((s: any) => s.track?.kind === 'video');
-            if (sender) sender.replaceTrack(originalTrack);
-          });
-        }
-      }
-      return;
-    }
-
-    const initSegmentation = async () => {
-      // Pre-load background image if not blur
-      if (selectedBackground !== 'blur') {
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.src = selectedBackground;
-        await new Promise((resolve) => {
-          img.onload = resolve;
-          img.onerror = resolve; // Continue even if image fails to load
-        });
+    if (bgType === 'image' && bgImage) {
+      const img = new Image();
+      img.src = bgImage;
+      img.onload = () => {
         bgImageRef.current = img;
-      } else {
-        bgImageRef.current = null;
-      }
-
-      if (!segmentationRef.current) {
-        const selfieSegmentation = new SelfieSegmentation({
-          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`,
-        });
-        selfieSegmentation.setOptions({ modelSelection: 1 });
-        selfieSegmentation.onResults(onResults);
-        segmentationRef.current = selfieSegmentation;
-      }
-      processingRef.current = true;
-      requestAnimationFrame(processFrame);
-    };
-
-    const processFrame = async () => {
-      if (!processingRef.current || !userVideo.current || !segmentationRef.current) return;
-      if (userVideo.current.readyState >= 2) {
-        await segmentationRef.current.send({ image: userVideo.current });
-      }
-      requestAnimationFrame(processFrame);
-    };
-
-    const onResults = (results: any) => {
-      if (!canvasRef.current || !processingRef.current) return;
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      if (canvas.width !== results.image.width || canvas.height !== results.image.height) {
-        canvas.width = results.image.width;
-        canvas.height = results.image.height;
-      }
-
-      ctx.save();
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      
-      ctx.drawImage(results.segmentationMask, 0, 0, canvas.width, canvas.height);
-
-      ctx.globalCompositeOperation = 'source-in';
-      if (selectedBackground === 'blur') {
-        ctx.filter = 'blur(10px)';
-        ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
-        ctx.filter = 'none';
-      } else if (bgImageRef.current && bgImageRef.current.complete) {
-        ctx.drawImage(bgImageRef.current, 0, 0, canvas.width, canvas.height);
-      }
-
-      ctx.globalCompositeOperation = 'destination-over';
-      ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
-      
-      ctx.restore();
-
-      // Update local video and peers
-      if (processingRef.current && (canvas as any).captureStream) {
-        const canvasStream = (canvas as any).captureStream(30);
-        const canvasTrack = canvasStream.getVideoTracks()[0];
-        
-        // Update local video if it's not already showing the canvas stream
-        if (userVideo.current && userVideo.current.srcObject !== canvasStream) {
-          userVideo.current.srcObject = canvasStream;
-        }
-
-        peersRef.current.forEach(({ peer }) => {
-          const sender = peer._pc.getSenders().find((s: any) => s.track?.kind === 'video');
-          if (sender && sender.track?.id !== canvasTrack.id) {
-            sender.replaceTrack(canvasTrack);
-          }
-        });
-      }
-    };
-
-    initSegmentation();
-
-    return () => {
-      processingRef.current = false;
-    };
-  }, [selectedBackground, stream, isScreenSharing]);
-
-  const backgrounds = [
-    { id: 'none', name: 'None', url: null },
-    { id: 'blur', name: 'Blur', url: 'blur' },
-    { id: 'library', name: 'Library', url: 'https://images.unsplash.com/photo-1507842217343-583bb7270b66?auto=format&fit=crop&q=80&w=1000' },
-    { id: 'office', name: 'Office', url: 'https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&q=80&w=1000' },
-    { id: 'cafe', name: 'Cafe', url: 'https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&q=80&w=1000' },
-    { id: 'space', name: 'Space', url: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&q=80&w=1000' },
-  ];
-
-  const getConstraints = (quality: 'high' | 'medium' | 'low') => ({
-    video: {
-      width: { ideal: quality === 'high' ? 1280 : quality === 'medium' ? 640 : 320 },
-      height: { ideal: quality === 'high' ? 720 : quality === 'medium' ? 480 : 240 },
-      frameRate: { ideal: quality === 'high' ? 30 : quality === 'medium' ? 24 : 15 },
-    },
-    audio: true
-  });
-
-  const changeQuality = async (newQuality: 'high' | 'medium' | 'low') => {
-    if (!stream) return;
-    setVideoQuality(newQuality);
-
-    try {
-      const newStream = await navigator.mediaDevices.getUserMedia(getConstraints(newQuality));
-      const newVideoTrack = newStream.getVideoTracks()[0];
-      const oldVideoTrack = stream.getVideoTracks()[0];
-
-      if (userVideo.current) {
-        userVideo.current.srcObject = newStream;
-      }
-
-      peersRef.current.forEach(({ peer }) => {
-        if (peer.replaceTrack) {
-          peer.replaceTrack(oldVideoTrack, newVideoTrack, stream);
-        }
-      });
-
-      oldVideoTrack.stop();
-      
-      // Sync mic/cam states to the new tracks
-      newStream.getAudioTracks()[0].enabled = isMicOn;
-      newStream.getVideoTracks()[0].enabled = isCamOn;
-      
-      setStream(newStream);
-    } catch (err) {
-      console.error("Failed to change video quality:", err);
+        bgSettingsRef.current = { type: bgType, color: bgColor, image: img };
+      };
+    } else {
+      bgImageRef.current = null;
+      bgSettingsRef.current = { type: bgType, color: bgColor, image: null };
     }
-  };
+  }, [bgType, bgImage, bgColor]);
+
+  const participants = roomSnap?.participants || [];
 
   useEffect(() => {
-    // Fetch or create room metadata
-    const roomRef = doc(db, 'rooms', roomId);
-    const unsubscribeRoom = onSnapshot(roomRef, async (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        setHostId(data.hostId);
-        setCoHostIds(data.coHostIds || []);
-        setRoomPassword(data.password || null);
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messagesSnap]);
+
+  useEffect(() => {
+    if (roomLoading) return;
+    
+    if (isHost) {
+      if (!hasJoined) {
+        const roomRef = doc(db, 'rooms', roomId);
+        updateDoc(roomRef, { participants: arrayUnion(user.uid) }).catch(console.error);
+        setHasJoined(true);
+      }
+    } else {
+      if (!hasJoined && !waitingLoading) {
+        const waitingRef = doc(db, 'rooms', roomId, 'waitingUsers', user.uid);
+        if (!waitingUserSnap) {
+          setDoc(waitingRef, {
+            userId: user.uid,
+            displayName: user.displayName || 'Anonymous',
+            photoURL: user.photoURL || '',
+            joinedAt: serverTimestamp(),
+            status: 'waiting'
+          });
+        } else if (waitingUserSnap.status === 'admitted') {
+          const roomRef = doc(db, 'rooms', roomId);
+          updateDoc(roomRef, { participants: arrayUnion(user.uid) }).catch(console.error);
+          setHasJoined(true);
+        }
+      }
+    }
+  }, [roomLoading, isHost, hasJoined, waitingLoading, waitingUserSnap, roomId, user]);
+
+  useEffect(() => {
+    if (!hasJoined) return;
+    
+    // Initialize Media
+    const initMedia = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        streamRef.current = stream;
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+        }
+      } catch (err) {
+        console.error("Failed to get media", err);
+      }
+    };
+    initMedia();
+
+    return () => {
+      const roomRef = doc(db, 'rooms', roomId);
+      updateDoc(roomRef, { participants: arrayRemove(user.uid) }).catch(console.error);
+      streamRef.current?.getTracks().forEach(t => t.stop());
+      screenStreamRef.current?.getTracks().forEach(t => t.stop());
+      cameraRef.current?.stop();
+      selfieSegmentationRef.current?.close();
+    };
+  }, [roomId, user.uid, hasJoined]);
+
+  // Virtual Background Logic
+  useEffect(() => {
+    if (!hasJoined || !localVideoRef.current || !bgCanvasRef.current) return;
+
+    if (isVirtualBg) {
+      if (!selfieSegmentationRef.current) {
+        const selfieSegmentation = new SelfieSegmentation({locateFile: (file) => {
+          return `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`;
+        }});
+        selfieSegmentation.setOptions({
+          modelSelection: 1,
+        });
         
-        const isModerator = data.hostId === user.uid || (data.coHostIds || []).includes(user.uid);
-        if (isModerator) {
-          setIsAdmitted(true);
-          setIsPasswordVerified(true);
-        }
-      } else {
-        // Fetch post data to get the password
-        const postSnap = await getDoc(doc(db, 'posts', roomId));
-        const postData = postSnap.exists() ? postSnap.data() : null;
+        selfieSegmentation.onResults((results: Results) => {
+          const canvas = bgCanvasRef.current;
+          const ctx = canvas?.getContext('2d');
+          if (!ctx || !canvas) return;
 
-        const newRoom = {
-          roomId,
-          hostId: user.uid,
-          coHostIds: [],
-          password: postData?.password || null,
-          createdAt: serverTimestamp(),
-          isActive: true
-        };
-        setDoc(roomRef, newRoom);
-        setHostId(user.uid);
-        setIsAdmitted(true);
-        setIsPasswordVerified(true);
+          canvas.width = results.image.width;
+          canvas.height = results.image.height;
+
+          ctx.save();
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          
+          // Draw segmentation mask
+          ctx.drawImage(results.segmentationMask, 0, 0, canvas.width, canvas.height);
+
+          // Draw the person
+          ctx.globalCompositeOperation = 'source-in';
+          ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+
+          // Draw the background
+          ctx.globalCompositeOperation = 'destination-atop';
+          
+          const { type, color, image } = bgSettingsRef.current;
+          if (type === 'color') {
+            ctx.fillStyle = color;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+          } else if (type === 'image' && image) {
+            ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+          } else {
+            // Blur
+            ctx.filter = 'blur(10px)';
+            ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+          }
+          
+          ctx.restore();
+        });
+        selfieSegmentationRef.current = selfieSegmentation;
       }
-    });
 
-    return () => unsubscribeRoom();
-  }, [roomId, user.uid]);
-
-  useEffect(() => {
-    if (isAdmitted || !hostId || (roomPassword && !isPasswordVerified)) return;
-
-    const waitingUserRef = doc(db, 'rooms', roomId, 'waitingUsers', user.uid);
-    setDoc(waitingUserRef, {
-      userId: user.uid,
-      displayName: user.displayName,
-      photoURL: user.photoURL,
-      joinedAt: serverTimestamp(),
-      status: 'waiting'
-    });
-
-    const unsubscribeWaiting = onSnapshot(waitingUserRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const status = docSnap.data().status;
-        if (status === 'admitted') {
-          setIsAdmitted(true);
-        } else if (status === 'denied') {
-          setIsDenied(true);
-        }
+      if (!cameraRef.current && localVideoRef.current) {
+        const camera = new MediaPipeCamera(localVideoRef.current, {
+          onFrame: async () => {
+            if (localVideoRef.current && selfieSegmentationRef.current) {
+              await selfieSegmentationRef.current.send({image: localVideoRef.current});
+            }
+          },
+          width: 1280,
+          height: 720
+        });
+        camera.start();
+        cameraRef.current = camera;
       }
-    });
-
-    return () => {
-      unsubscribeWaiting();
-      deleteDoc(waitingUserRef).catch(() => {});
-    };
-  }, [isAdmitted, hostId, roomId, user, roomPassword, isPasswordVerified]);
-
-  useEffect(() => {
-    const isModerator = hostId === user.uid || coHostIds.includes(user.uid);
-    if (!isModerator || !roomId) return;
-
-    const waitingUsersRef = collection(db, 'rooms', roomId, 'waitingUsers');
-    const q = query(waitingUsersRef, where('status', '==', 'waiting'));
-    const unsubscribeWaitingList = onSnapshot(q, (snapshot) => {
-      setWaitingUsers(snapshot.docs.map(doc => doc.data()));
-    });
-
-    return () => unsubscribeWaitingList();
-  }, [hostId, coHostIds, roomId, user.uid]);
-
-  useEffect(() => {
-    if (!isAdmitted) return;
-    const interval = setInterval(() => {
-      setSessionDuration(prev => prev + 1);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [isAdmitted]);
-
-  useEffect(() => {
-    if (!isAdmitted) return;
-
-    socketRef.current = io("/");
-    navigator.mediaDevices.getUserMedia(getConstraints(videoQuality)).then(stream => {
-      setStream(stream);
-      if (userVideo.current) {
-        userVideo.current.srcObject = stream;
+    } else {
+      cameraRef.current?.stop();
+      cameraRef.current = null;
+      // Clear canvas
+      const canvas = bgCanvasRef.current;
+      const ctx = canvas?.getContext('2d');
+      if (ctx && canvas) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
       }
-      socketRef.current.emit("join-room", roomId);
-      
-      socketRef.current.on("mute-remote", () => {
-        if (stream) {
-          stream.getAudioTracks()[0].enabled = false;
-          setIsMicOn(false);
-        }
-      });
+    }
+  }, [isVirtualBg, hasJoined]);
 
-      socketRef.current.on("kick-remote", () => {
-        onLeave();
-      });
-
-      socketRef.current.on("message-highlighted", (messageId: string | null) => {
-        setHighlightedMessageId(messageId);
-      });
-
-      socketRef.current.on("all-users", (users: string[]) => {
-        const peers: any[] = [];
-        users.forEach(userID => {
-          const peer = createPeer(userID, socketRef.current.id, stream);
-          peersRef.current.push({
-            peerID: userID,
-            peer,
-          });
-          peers.push({
-            peerID: userID,
-            peer,
-          });
-        });
-        setPeers(peers);
-      });
-
-      socketRef.current.on("user-joined", (payload: any) => {
-        const peer = addPeer(payload.signal, payload.callerID, stream);
-        peersRef.current.push({
-          peerID: payload.callerID,
-          peer,
-        });
-        setPeers(prev => [...prev, { peerID: payload.callerID, peer }]);
-      });
-
-      socketRef.current.on("receiving-returned-signal", (payload: any) => {
-        const item = peersRef.current.find(p => p.peerID === payload.id);
-        if (item) item.peer.signal(payload.signal);
-      });
-
-      socketRef.current.on("user-disconnected", (userId: string) => {
-        const peerObj = peersRef.current.find(p => p.peerID === userId);
-        if (peerObj) peerObj.peer.destroy();
-        const peers = peersRef.current.filter(p => p.peerID !== userId);
-        peersRef.current = peers;
-        setPeers(peers);
-        setRaisedHands(prev => {
-          const next = new Set(prev);
-          next.delete(userId);
-          return next;
-        });
-      });
-
-      socketRef.current.on("user-hand-raise", ({ userId, isRaised }: any) => {
-        setRaisedHands(prev => {
-          const next = new Set(prev);
-          if (isRaised) next.add(userId);
-          else next.delete(userId);
-          return next;
-        });
-      });
-
-      socketRef.current.on("receive-room-message", (message: any) => {
-        setRoomMessages(prev => [...prev, message]);
-      });
-    });
-
-    return () => {
-      stream?.getTracks().forEach(track => track.stop());
-      socketRef.current?.disconnect();
-    };
-  }, [isAdmitted, roomId]);
-
-  function createPeer(userToSignal: string, callerID: string, stream: MediaStream) {
-    const peer = new Peer({
-      initiator: true,
-      trickle: false,
-      stream,
-    });
-
-    peer.on("signal", signal => {
-      socketRef.current.emit("sending-signal", { userToSignal, callerID, signal });
-    });
-
-    return peer;
-  }
-
-  function addPeer(incomingSignal: any, callerID: string, stream: MediaStream) {
-    const peer = new Peer({
-      initiator: false,
-      trickle: false,
-      stream,
-    });
-
-    peer.on("signal", signal => {
-      socketRef.current.emit("returning-signal", { signal, callerID });
-    });
-
-    peer.signal(incomingSignal);
-
-    return peer;
-  }
+  useEffect(() => {
+    if (isAnnotating && canvasRef.current) {
+      const canvas = canvasRef.current;
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+    }
+  }, [isAnnotating]);
 
   const toggleMic = () => {
-    if (stream) {
-      stream.getAudioTracks()[0].enabled = !isMicOn;
+    if (streamRef.current) {
+      streamRef.current.getAudioTracks().forEach(t => t.enabled = !isMicOn);
       setIsMicOn(!isMicOn);
     }
   };
 
-  const toggleCam = () => {
-    if (stream) {
-      stream.getVideoTracks()[0].enabled = !isCamOn;
-      setIsCamOn(!isCamOn);
+  const toggleVideo = () => {
+    if (streamRef.current) {
+      streamRef.current.getVideoTracks().forEach(t => t.enabled = !isVideoOn);
+      setIsVideoOn(!isVideoOn);
     }
-  };
-
-  const toggleHandRaise = () => {
-    const next = !isHandRaised;
-    setIsHandRaised(next);
-    socketRef.current.emit("hand-raise", roomId, next);
   };
 
   const toggleScreenShare = async () => {
     if (!isScreenSharing) {
       try {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        const screenTrack = screenStream.getVideoTracks()[0];
-        const oldVideoTrack = stream?.getVideoTracks()[0];
-
-        if (userVideo.current) {
-          userVideo.current.srcObject = screenStream;
+        screenStreamRef.current = screenStream;
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = screenStream;
         }
-
-        peersRef.current.forEach(({ peer }) => {
-          if (peer.replaceTrack && oldVideoTrack) {
-            peer.replaceTrack(oldVideoTrack, screenTrack, stream!);
-          }
-        });
-
-        screenTrack.onended = () => {
-          stopScreenShare(screenTrack);
-        };
-
         setIsScreenSharing(true);
+        
+        screenStream.getVideoTracks()[0].onended = () => {
+          stopScreenShare();
+        };
       } catch (err) {
-        console.error("Failed to share screen:", err);
+        console.error("Failed to share screen", err);
       }
     } else {
-      const screenTrack = userVideo.current?.srcObject instanceof MediaStream 
-        ? (userVideo.current.srcObject as MediaStream).getVideoTracks()[0] 
-        : null;
-      if (screenTrack) stopScreenShare(screenTrack);
+      stopScreenShare();
     }
   };
 
-  const stopScreenShare = async (screenTrack: MediaStreamTrack) => {
-    screenTrack.stop();
-    try {
-      const videoStream = await navigator.mediaDevices.getUserMedia(getConstraints(videoQuality));
-      const videoTrack = videoStream.getVideoTracks()[0];
-      const audioTrack = videoStream.getAudioTracks()[0];
+  const stopScreenShare = () => {
+    screenStreamRef.current?.getTracks().forEach(t => t.stop());
+    if (localVideoRef.current && streamRef.current) {
+      localVideoRef.current.srcObject = streamRef.current;
+    }
+    setIsScreenSharing(false);
+  };
 
-      // Sync with current UI state
-      videoTrack.enabled = isCamOn;
-      audioTrack.enabled = isMicOn;
-
-      if (userVideo.current) {
-        userVideo.current.srcObject = videoStream;
-      }
-
-      peersRef.current.forEach(({ peer }) => {
-        if (peer.replaceTrack) {
-          peer.replaceTrack(screenTrack, videoTrack, stream!);
-        }
-      });
-
-      // Stop old stream tracks to prevent leaks
-      stream?.getTracks().forEach(t => t.stop());
-      
-      setStream(videoStream);
-      setIsScreenSharing(false);
-    } catch (err) {
-      console.error("Failed to restore camera:", err);
-      setIsScreenSharing(false);
+  const toggleWhiteboard = () => {
+    setIsWhiteboardOn(!isWhiteboardOn);
+    if (!isWhiteboardOn) {
+      setIsAnnotating(true);
     }
   };
 
-  const sendRoomMessage = (text: string) => {
-    socketRef.current.emit("send-room-message", roomId, {
-      id: Math.random().toString(36).substr(2, 9),
-      userName: user.displayName,
-      userId: user.uid,
-      text
-    });
-  };
-
-  const handleMuteUser = (userId: string) => {
-    socketRef.current.emit("mute-user", roomId, userId);
-  };
-
-  const handleKickUser = (userId: string) => {
-    socketRef.current.emit("kick-user", roomId, userId);
-  };
-
-  const handleHighlightMessage = (messageId: string | null) => {
-    socketRef.current.emit("highlight-message", roomId, messageId);
-  };
-
-  const handleMuteAll = () => {
-    socketRef.current.emit("mute-all", roomId);
-  };
-
-  const startRecording = async () => {
-    try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({ 
-        video: true, 
-        audio: true 
-      });
-      
-      recordedChunksRef.current = [];
-      const recorder = new MediaRecorder(screenStream, {
-        mimeType: 'video/webm;codecs=vp9'
-      });
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          recordedChunksRef.current.push(e.data);
-        }
-      };
-
-      recorder.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `SkillSwap-Session-${new Date().toISOString()}.webm`;
-        a.click();
-        URL.revokeObjectURL(url);
-        setIsRecording(false);
-        screenStream.getTracks().forEach(t => t.stop());
-      };
-
-      mediaRecorderRef.current = recorder;
-      recorder.start();
-      setIsRecording(true);
-    } catch (err) {
-      console.error("Failed to start recording:", err);
-    }
-  };
-
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-    }
-  };
-
-  const formatDuration = (seconds: number) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = seconds % 60;
-    return `${h > 0 ? h + ':' : ''}${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
-
-  const isHost = user.uid === hostId;
-  const isCoHost = coHostIds.includes(user.uid);
-  const isModerator = isHost || isCoHost;
-
-  if (roomPassword && !isPasswordVerified && !isModerator) {
-    return (
-      <div className="fixed inset-0 bg-[#C0A0FF] z-[400] flex items-center justify-center p-6 text-center">
-        <BackgroundVisuals />
-        <div className="bg-white border-8 border-black p-12 max-w-md w-full shadow-[16px_16px_0px_0px_rgba(0,0,0,1)] relative z-10">
-          <Lock className="w-20 h-20 text-[#5A5A40] mx-auto mb-6" />
-          <h2 className="text-4xl font-black uppercase tracking-tighter mb-4">Private Meeting</h2>
-          <p className="text-lg font-bold mb-8 italic">This session is password protected. Please enter the password to continue.</p>
-          <form 
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (passwordInput === roomPassword) {
-                setIsPasswordVerified(true);
-                setPasswordError(false);
-              } else {
-                setPasswordError(true);
-              }
-            }}
-            className="space-y-4"
-          >
-            <input
-              type="password"
-              value={passwordInput}
-              onChange={(e) => setPasswordInput(e.target.value)}
-              placeholder="Enter password..."
-              className={cn(
-                "w-full bg-white border-4 border-black px-4 py-3 font-bold focus:outline-none transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]",
-                passwordError && "border-red-500 shadow-red-500"
-              )}
-              autoFocus
-            />
-            {passwordError && <p className="text-red-500 text-xs font-black uppercase">Incorrect password. Try again.</p>}
-            <div className="flex gap-3 pt-4">
-              <Button type="submit" className="flex-1 bg-[#0080FF] text-white border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none transition-all">Verify</Button>
-              <Button type="button" variant="ghost" onClick={onLeave} className="border-4 border-black">Cancel</Button>
-            </div>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  if (isDenied) {
-    return (
-      <div className="fixed inset-0 bg-[#FF80BF] z-[300] flex items-center justify-center p-6 text-center">
-        <BackgroundVisuals />
-        <div className="bg-white border-8 border-black p-12 max-w-md w-full shadow-[16px_16px_0px_0px_rgba(0,0,0,1)] relative z-10">
-          <XCircle className="w-20 h-20 text-red-500 mx-auto mb-6" />
-          <h2 className="text-4xl font-black uppercase tracking-tighter mb-4">Access Denied</h2>
-          <p className="text-lg font-bold mb-8 italic">The host has declined your request to join this session.</p>
-          <Button onClick={onLeave} className="w-full bg-black text-white border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none transition-all">Return to Lobby</Button>
-        </div>
-      </div>
-    );
-  }
-
-  if (!isAdmitted) {
-    return (
-      <div className="fixed inset-0 bg-[#FFD700] z-[300] flex items-center justify-center p-6 text-center">
-        <BackgroundVisuals />
-        <div className="bg-white border-8 border-black p-12 max-w-md w-full shadow-[16px_16px_0px_0px_rgba(0,0,0,1)] relative z-10">
-          <div className="mb-8 flex justify-center">
-            <div className="relative">
-              <div className="absolute inset-0 bg-[#C0A0FF] animate-ping opacity-20" />
-              <div className="relative bg-[#C0A0FF] border-4 border-black p-8 text-white shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
-                <Clock className="w-12 h-12" />
-              </div>
-            </div>
-          </div>
-          <h2 className="text-4xl font-black uppercase tracking-tighter mb-4">Waiting Room</h2>
-          <p className="text-lg font-bold mb-8 italic">Please wait while the host admits you to the session...</p>
-          <div className="flex flex-col gap-4">
-            <div className="flex justify-center gap-2">
-              {[1, 2, 3, 4, 5].map(i => (
-                <motion.div
-                  key={i}
-                  animate={{ height: [10, 40, 10] }}
-                  transition={{ duration: 0.5, repeat: Infinity, delay: i * 0.1 }}
-                  className="w-2 bg-black"
-                />
-              ))}
-            </div>
-            <Button variant="secondary" onClick={onLeave} className="mt-8 bg-red-500 text-white border-4 border-black font-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none transition-all">
-              Cancel Request
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const handleAdmitUser = async (waitingUserId: string) => {
-    const waitingUserRef = doc(db, 'rooms', roomId, 'waitingUsers', waitingUserId);
-    await updateDoc(waitingUserRef, { status: 'admitted' });
-  };
-
-  const handleDenyUser = async (waitingUserId: string) => {
-    const waitingUserRef = doc(db, 'rooms', roomId, 'waitingUsers', waitingUserId);
-    await updateDoc(waitingUserRef, { status: 'denied' });
-  };
-
-  const handlePromoteToCoHost = async (peerUid: string) => {
-    if (!isHost) return;
-    const roomRef = doc(db, 'rooms', roomId);
-    await updateDoc(roomRef, {
-      coHostIds: arrayUnion(peerUid)
-    });
-  };
-
-  return (
-    <div className="fixed inset-0 bg-[#FFD700] z-[200] flex flex-col">
-      <BackgroundVisuals />
-      <canvas ref={canvasRef} className="hidden" />
-      <div className="p-6 flex justify-between items-center text-black relative z-10">
-        <div className="flex items-center gap-3">
-          <div className="bg-[#5A5A40] p-2 rounded-xl text-white">
-            <GraduationCap className="w-6 h-6" />
-          </div>
-          <div>
-            <h2 className="text-xl font-black uppercase tracking-tighter">Study Room: {roomId.slice(0, 8)}</h2>
-            <p className="text-xs font-bold opacity-60 uppercase tracking-widest">Live Peer-to-Peer Learning Session</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 bg-white border-4 border-black px-4 py-2 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] text-xs">
-            <Settings className="w-3 h-3 text-[#5A5A40]" />
-            <span className="opacity-60 font-sans uppercase tracking-widest font-bold">Quality:</span>
-            <select 
-              value={videoQuality} 
-              onChange={(e) => changeQuality(e.target.value as any)}
-              className="bg-transparent border-none outline-none cursor-pointer font-black text-[#5A5A40]"
-            >
-              <option value="high">High (720p)</option>
-              <option value="medium">Med (480p)</option>
-              <option value="low">Low (240p)</option>
-            </select>
-          </div>
-          <Button 
-            variant="secondary" 
-            className="bg-red-500 border-4 border-black text-white font-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none transition-all" 
-            onClick={() => {
-              if (whiteboardSnapshots.length > 0) {
-                setShowSummary(true);
-              } else {
-                onLeave();
-              }
-            }}
-          >
-            <PhoneOff className="w-4 h-4" />
-            Leave Call
-          </Button>
-        </div>
-      </div>
-
-      <div className="flex-1 flex overflow-hidden relative z-10">
-        <div className="flex-1 p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 overflow-y-auto">
-          {/* Waiting Room List (Moderators only) */}
-          {isModerator && waitingUsers.length > 0 && (
-            <div className="col-span-full mb-6">
-              <h3 className="text-sm font-black uppercase tracking-widest text-black mb-4 flex items-center gap-2">
-                <Users className="w-4 h-4" />
-                Waiting Room ({waitingUsers.length})
-              </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {waitingUsers.map((wUser) => (
-                  <div key={wUser.userId} className="bg-white border-4 border-black p-4 flex items-center justify-between shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                    <div className="flex items-center gap-3">
-                      <img src={wUser.photoURL} className="w-10 h-10 border-2 border-black" referrerPolicy="no-referrer" />
-                      <span className="font-black text-sm">{wUser.displayName}</span>
-                    </div>
-                    <div className="flex gap-2">
-                      <button 
-                        onClick={() => handleAdmitUser(wUser.userId)}
-                        className="bg-green-500 border-2 border-black p-1.5 text-white hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
-                      >
-                        <Check className="w-4 h-4" />
-                      </button>
-                      <button 
-                        onClick={() => handleDenyUser(wUser.userId)}
-                        className="bg-red-500 border-2 border-black p-1.5 text-white hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Local Video */}
-          <div className="relative aspect-video bg-black rounded-3xl overflow-hidden border-2 border-[#5A5A40]">
-            <video ref={userVideo} autoPlay muted playsInline className={cn("w-full h-full object-cover", !isScreenSharing && "mirror")} />
-            <div className="absolute bottom-4 left-4 bg-black/50 backdrop-blur-md px-3 py-1 rounded-full text-white text-xs flex items-center gap-2">
-              <span>You ({user.displayName})</span>
-              {isHost && <span className="bg-yellow-500 text-black px-1.5 py-0.5 rounded text-[8px] font-black uppercase">Host</span>}
-              {isScreenSharing && <span className="text-blue-400">(Sharing Screen)</span>}
-              {isHandRaised && <Hand className="w-3 h-3 text-yellow-500 animate-bounce" />}
-            </div>
-            {!isCamOn && !isScreenSharing && (
-              <div className="absolute inset-0 flex items-center justify-center bg-[#2a2a2a]">
-                <div className="w-20 h-20 rounded-full bg-[#5A5A40] flex items-center justify-center text-2xl font-bold text-white">
-                  {user.displayName?.[0]}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Remote Videos */}
-          {peers.map((peerObj, index) => (
-            <RemoteVideo 
-              key={index} 
-              peer={peerObj.peer} 
-              peerID={peerObj.peerID}
-              isHandRaised={raisedHands.has(peerObj.peerID)} 
-              isModerator={isModerator}
-              isHost={isHost}
-              onMute={() => handleMuteUser(peerObj.peerID)}
-              onKick={() => handleKickUser(peerObj.peerID)}
-              onPromote={() => handlePromoteToCoHost(peerObj.peerID)}
-            />
-          ))}
-        </div>
-
-        {showChat && (
-          <div className="w-80 bg-white border-l-8 border-black flex flex-col p-6 shadow-[-8px_0px_0px_0px_rgba(0,0,0,1)]">
-            <div className="flex justify-between items-center mb-6 text-black">
-              <h3 className="font-black uppercase tracking-widest text-sm">In-Call Chat</h3>
-              <button onClick={() => setShowChat(false)} className="text-gray-400 hover:text-black">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2 scrollbar-thin scrollbar-thumb-gray-300">
-              {roomMessages.map((msg, i) => (
-                <div key={i} className={cn(
-                  "flex flex-col p-3 border-2 border-black transition-all shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]",
-                  highlightedMessageId === msg.id ? "bg-yellow-200" : "bg-white"
-                )}>
-                  <div className="flex justify-between items-start mb-1">
-                    <span className="text-[10px] font-black uppercase text-[#5A5A40]">{msg.userName}</span>
-                    {isHost && (
-                      <button 
-                        onClick={() => handleHighlightMessage(highlightedMessageId === msg.id ? null : msg.id)}
-                        className={cn(
-                          "text-[8px] uppercase font-black px-1.5 py-0.5 border border-black",
-                          highlightedMessageId === msg.id ? "bg-yellow-500 text-black" : "bg-gray-100 text-gray-400 hover:text-black"
-                        )}
-                      >
-                        {highlightedMessageId === msg.id ? 'Pinned' : 'Pin'}
-                      </button>
-                    )}
-                  </div>
-                  <div className="text-black text-xs font-medium">
-                    {msg.text}
-                  </div>
-                </div>
-              ))}
-            </div>
-            <form 
-              onSubmit={(e) => {
-                e.preventDefault();
-                const input = e.currentTarget.elements.namedItem('msg') as HTMLInputElement;
-                if (input.value.trim()) {
-                  sendRoomMessage(input.value);
-                  input.value = '';
-                }
-              }}
-              className="flex gap-2"
-            >
-              <input
-                name="msg"
-                placeholder="Send message..."
-                className="flex-1 bg-white border-2 border-black px-4 py-2 text-xs text-black outline-none focus:bg-yellow-50"
-              />
-              <button className="p-2 bg-[#5A5A40] text-white border-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none transition-all">
-                <Send className="w-3 h-3" />
-              </button>
-            </form>
-          </div>
-        )}
-      </div>
-
-      <div className="p-8 flex justify-center items-center gap-4 relative">
-        <div className="absolute left-8 flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-black/5 px-4 py-2 border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-            <Clock className="w-4 h-4 text-[#5A5A40]" />
-            <span className="font-black text-sm tabular-nums">{formatDuration(sessionDuration)}</span>
-          </div>
-          {isRecording && (
-            <div className="flex items-center gap-2 bg-red-50 px-4 py-2 border-2 border-red-500 shadow-[4px_4px_0px_0px_rgba(239,68,68,1)] animate-pulse">
-              <Radio className="w-4 h-4 text-red-500" />
-              <span className="font-black text-xs text-red-500 uppercase tracking-tighter">Recording</span>
-            </div>
-          )}
-        </div>
-
-        {showBackgroundOptions && (
-          <div className="absolute bottom-24 left-1/2 -translate-x-1/2 bg-[#2a2a2a] p-4 rounded-2xl shadow-2xl border border-[#3a3a3a] w-[400px] z-[300]">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-sm font-bold text-white uppercase tracking-widest">Virtual Backgrounds</h3>
-              <button onClick={() => setShowBackgroundOptions(false)} className="text-gray-400 hover:text-white">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              {backgrounds.map((bg) => (
-                <button
-                  key={bg.id}
-                  onClick={() => setSelectedBackground(bg.url)}
-                  className={cn(
-                    "relative aspect-video rounded-lg overflow-hidden border-2 transition-all",
-                    selectedBackground === bg.url ? "border-[#5A5A40]" : "border-transparent hover:border-gray-500"
-                  )}
-                >
-                  {bg.url === 'blur' ? (
-                    <div className="w-full h-full bg-gray-600 flex items-center justify-center text-[10px] text-white font-bold">BLUR</div>
-                  ) : bg.url ? (
-                    <img src={bg.url} alt={bg.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                  ) : (
-                    <div className="w-full h-full bg-gray-800 flex items-center justify-center text-[10px] text-white font-bold">NONE</div>
-                  )}
-                  <div className="absolute bottom-0 left-0 right-0 bg-black/60 py-1 text-[8px] text-white text-center uppercase font-bold">
-                    {bg.name}
-                  </div>
-                </button>
-              ))}
-              <label className="relative aspect-video rounded-lg overflow-hidden border-2 border-dashed border-gray-600 hover:border-[#5A5A40] transition-all cursor-pointer flex flex-col items-center justify-center gap-1">
-                <Plus className="w-4 h-4 text-gray-400" />
-                <span className="text-[8px] text-gray-400 font-bold uppercase">Upload</span>
-                <input 
-                  type="file" 
-                  accept="image/*" 
-                  className="hidden" 
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) {
-                      const reader = new FileReader();
-                      reader.onload = (ev) => setSelectedBackground(ev.target?.result as string);
-                      reader.readAsDataURL(file);
-                    }
-                  }}
-                />
-              </label>
-            </div>
-          </div>
-        )}
-
-        <button
-          onClick={toggleMic}
-          className={cn(
-            "w-12 h-12 border-4 border-black flex items-center justify-center transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none",
-            isMicOn ? "bg-white text-black" : "bg-red-500 text-white"
-          )}
-        >
-          {isMicOn ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
-        </button>
-        <button
-          onClick={toggleCam}
-          className={cn(
-            "w-12 h-12 border-4 border-black flex items-center justify-center transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none",
-            isCamOn ? "bg-white text-black" : "bg-red-500 text-white"
-          )}
-        >
-          {isCamOn ? <VideoIcon className="w-5 h-5" /> : <VideoOff className="w-5 h-5" />}
-        </button>
-        
-        <div className="w-1 h-8 bg-black mx-2" />
-
-        <button
-          onClick={() => setShowBackgroundOptions(!showBackgroundOptions)}
-          className={cn(
-            "w-12 h-12 border-4 border-black flex items-center justify-center transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none",
-            selectedBackground ? "bg-[#0080FF] text-white" : "bg-white text-black"
-          )}
-          title="Virtual Background"
-        >
-          <ImageIcon className="w-5 h-5" />
-        </button>
-
-        <button
-          onClick={toggleHandRaise}
-          className={cn(
-            "w-12 h-12 border-4 border-black flex items-center justify-center transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none",
-            isHandRaised ? "bg-yellow-500 text-white" : "bg-white text-black"
-          )}
-          title="Raise Hand"
-        >
-          <Hand className="w-5 h-5" />
-        </button>
-
-        <button
-          onClick={toggleScreenShare}
-          className={cn(
-            "w-12 h-12 border-4 border-black flex items-center justify-center transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none",
-            isScreenSharing ? "bg-[#0080FF] text-white" : "bg-white text-black"
-          )}
-          title="Present Screen"
-        >
-          <Monitor className="w-5 h-5" />
-        </button>
-
-        <button
-          onClick={() => setShowWhiteboard(true)}
-          className="w-12 h-12 border-4 border-black bg-white text-black flex items-center justify-center shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none transition-all"
-          title="Annotation Clipboard"
-        >
-          <Clipboard className="w-5 h-5" />
-        </button>
-
-        <button
-          onClick={() => setShowChat(!showChat)}
-          className={cn(
-            "w-12 h-12 border-4 border-black flex items-center justify-center transition-all relative shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none",
-            showChat ? "bg-[#0080FF] text-white" : "bg-white text-black"
-          )}
-          title="In-Call Chat"
-        >
-          <MessageSquare className="w-5 h-5" />
-          {roomMessages.length > 0 && !showChat && (
-            <div className="absolute top-0 right-0 w-3 h-3 bg-red-500 rounded-full border-2 border-black" />
-          )}
-        </button>
-
-        {isModerator && (
-          <button
-            onClick={handleMuteAll}
-            className="w-12 h-12 border-4 border-black bg-white text-black flex items-center justify-center shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none transition-all"
-            title="Mute All Participants"
-          >
-            <MicOff className="w-5 h-5" />
-          </button>
-        )}
-
-        {isHost && (
-          <button
-            onClick={isRecording ? stopRecording : startRecording}
-            className={cn(
-              "w-12 h-12 border-4 border-black flex items-center justify-center transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none",
-              isRecording ? "bg-red-500 text-white" : "bg-white text-black"
-            )}
-            title={isRecording ? "Stop Recording" : "Start Recording"}
-          >
-            {isRecording ? <Square className="w-5 h-5 fill-current" /> : <Radio className="w-5 h-5" />}
-          </button>
-        )}
-
-        <button
-          onClick={() => {
-            if (whiteboardSnapshots.length > 0 || roomMessages.length > 0) {
-              setShowSummary(true);
-            } else {
-              onLeave();
-            }
-          }}
-          className="px-6 h-12 bg-red-500 text-white border-4 border-black font-black uppercase tracking-tighter shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none transition-all ml-4"
-        >
-          Leave Session
-        </button>
-      </div>
-
-      {showWhiteboard && (
-        <Whiteboard 
-          onClose={() => setShowWhiteboard(false)} 
-          onSaveSnapshot={(data) => {
-            setWhiteboardSnapshots(prev => [...prev, data]);
-            setShowWhiteboard(false);
-          }}
-        />
-      )}
-      {showSummary && (
-        <SessionSummary 
-          snapshots={whiteboardSnapshots} 
-          messages={roomMessages}
-          onDone={() => {
-            setShowSummary(false);
-            if (onSessionEnd) {
-              const participants = [user.uid, ...peers.map(p => p.peerID)];
-              onSessionEnd(sessionDuration, participants);
-            }
-            onLeave();
-          }} 
-        />
-      )}
-    </div>
-  );
-};
-
-const RemoteVideo = ({ peer, peerID, isHandRaised, isModerator, isHost, onMute, onKick, onPromote }: { 
-  peer: any, 
-  peerID: string,
-  isHandRaised?: boolean, 
-  isModerator?: boolean, 
-  isHost?: boolean, 
-  onMute?: () => void, 
-  onKick?: () => void,
-  onPromote?: () => void
-}) => {
-  const ref = useRef<HTMLVideoElement>(null);
-
-  useEffect(() => {
-    peer.on("stream", (stream: MediaStream) => {
-      if (ref.current) {
-        ref.current.srcObject = stream;
-      }
-    });
-  }, [peer]);
-
-  return (
-    <div className="relative aspect-video bg-black border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] overflow-hidden group">
-      <video ref={ref} autoPlay playsInline className="w-full h-full object-cover" />
-      
-      <div className="absolute bottom-4 left-4 bg-black/50 backdrop-blur-md px-3 py-1 rounded-full text-white text-xs flex items-center gap-2">
-        <span>User ({peerID.substring(0, 5)}...)</span>
-        {isHandRaised && <Hand className="w-3 h-3 text-yellow-500 animate-bounce" />}
-      </div>
-      
-      {isModerator && (
-        <div className="absolute top-4 left-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button 
-            onClick={onMute}
-            className="bg-white border-2 border-black p-2 text-black hover:bg-red-500 hover:text-white transition-colors shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
-            title="Mute Participant"
-          >
-            <MicOff className="w-3 h-3" />
-          </button>
-          <button 
-            onClick={onKick}
-            className="bg-white border-2 border-black p-2 text-black hover:bg-red-500 hover:text-white transition-colors shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
-            title="Remove Participant"
-          >
-            <LogOut className="w-3 h-3" />
-          </button>
-          {isHost && (
-            <button 
-              onClick={onPromote}
-              className="bg-white border-2 border-black p-2 text-black hover:bg-blue-500 hover:text-white transition-colors shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
-              title="Promote to Co-Host"
-            >
-              <ShieldCheck className="w-3 h-3" />
-            </button>
-          )}
-        </div>
-      )}
-
-    </div>
-  );
-};
-
-const Whiteboard = ({ onClose, onSaveSnapshot }: { onClose: () => void, onSaveSnapshot: (dataUrl: string) => void }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [color, setColor] = useState('#5A5A40');
-
-  useEffect(() => {
+  // Annotation Handlers
+  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isAnnotating) return;
     const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    canvas.width = window.innerWidth * 0.8;
-    canvas.height = window.innerHeight * 0.7;
-    ctx.lineCap = 'round';
-    ctx.lineWidth = 3;
-    
-    // Fill background white for better AI analysis
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  }, []);
-
-  const startDrawing = (e: React.MouseEvent) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
+    const ctx = canvas?.getContext('2d');
+    if (!ctx || !canvas) return;
     const rect = canvas.getBoundingClientRect();
     ctx.beginPath();
     ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
     setIsDrawing(true);
   };
 
-  const draw = (e: React.MouseEvent) => {
-    if (!isDrawing) return;
+  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isAnnotating || !isDrawing) return;
     const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
+    const ctx = canvas?.getContext('2d');
+    if (!ctx || !canvas) return;
     const rect = canvas.getBoundingClientRect();
-    ctx.strokeStyle = color;
     ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = strokeWidth;
+    ctx.lineCap = 'round';
     ctx.stroke();
   };
 
-  const stopDrawing = () => setIsDrawing(false);
+  const stopDrawing = () => {
+    setIsDrawing(false);
+  };
 
-  const clear = () => {
+  const clearAnnotation = () => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const ctx = canvas?.getContext('2d');
+    if (canvas && ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+  };
+
+  const captureSlide = () => {
+    const canvas = document.createElement('canvas');
+    let width = 1280;
+    let height = 720;
+
+    if (localVideoRef.current && localVideoRef.current.videoWidth) {
+      width = localVideoRef.current.videoWidth;
+      height = localVideoRef.current.videoHeight;
+    }
+
+    canvas.width = width;
+    canvas.height = height;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  };
 
-  const handleSave = () => {
-    const canvas = canvasRef.current;
-    if (canvas) {
-      onSaveSnapshot(canvas.toDataURL('image/png'));
+    // 1. Draw Background (Video, Virtual BG, or Whiteboard)
+    if (isWhiteboardOn) {
+      ctx.fillStyle = '#1e293b'; // slate-800
+      ctx.fillRect(0, 0, width, height);
+    } else {
+      const sourceElement = isVirtualBg ? bgCanvasRef.current : localVideoRef.current;
+      if (sourceElement) {
+        ctx.drawImage(sourceElement, 0, 0, width, height);
+      }
     }
-  };
 
-  return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[300] flex items-center justify-center p-10">
-      <div className="bg-white rounded-[40px] p-8 w-full h-full flex flex-col">
-        <div className="flex justify-between items-center mb-6">
-          <div className="flex items-center gap-4">
-            <h2 className="text-2xl font-light italic">Annotation Clipboard</h2>
-            <div className="flex gap-2">
-              {['#5A5A40', '#ef4444', '#3b82f6', '#10b981'].map(c => (
-                <button
-                  key={c}
-                  onClick={() => setColor(c)}
-                  className={cn("w-6 h-6 rounded-full border-2", color === c ? "border-black" : "border-transparent")}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
-            </div>
-          </div>
-          <div className="flex gap-4">
-            <Button variant="ghost" onClick={clear} className="text-red-500">
-              <Eraser className="w-4 h-4" />
-              Clear
-            </Button>
-            <Button variant="secondary" onClick={handleSave} className="bg-[#5A5A40] text-white hover:bg-[#4A4A30]">
-              <Save className="w-4 h-4" />
-              Save to Slides
-            </Button>
-            <Button variant="secondary" onClick={onClose}>
-              <X className="w-4 h-4" />
-              Close
-            </Button>
-          </div>
-        </div>
-        <canvas
-          ref={canvasRef}
-          onMouseDown={startDrawing}
-          onMouseMove={draw}
-          onMouseUp={stopDrawing}
-          onMouseLeave={stopDrawing}
-          className="flex-1 bg-white rounded-3xl cursor-crosshair border border-[#e5e5e0]"
-        />
-      </div>
-    </div>
-  );
-};
-
-const PostModal = ({ user, profile, onClose }: { user: any, profile: UserProfile | null, onClose: () => void }) => (
-  <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-6">
-    <motion.div
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.95 }}
-      className="bg-white border-8 border-black p-10 max-w-md w-full shadow-[16px_16px_0px_0px_rgba(0,0,0,1)]"
-    >
-      <h2 className="text-4xl font-black uppercase tracking-tighter mb-6">Post to Bulletin</h2>
-      <form className="space-y-6" onSubmit={async (e) => {
-        e.preventDefault();
-        const formData = new FormData(e.currentTarget);
-        await addDoc(collection(db, 'posts'), {
-          authorUid: user.uid,
-          authorName: user.displayName,
-          authorPhoto: user.photoURL,
-          type: formData.get('type'),
-          skill: formData.get('skill'),
-          description: formData.get('description'),
-          password: formData.get('password') || null,
-          createdAt: serverTimestamp(),
-        });
-        onClose();
-      }}>
-        <div>
-          <label className="text-[10px] uppercase tracking-widest font-sans font-bold text-gray-400 block mb-2">I want to...</label>
-          <select
-            name="type"
-            className="w-full bg-white border-4 border-black px-4 py-3 font-bold focus:outline-none transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] appearance-none"
-          >
-            <option value="teach">Teach a Skill</option>
-            <option value="learn">Learn a Skill</option>
-          </select>
-        </div>
-        <div>
-          <label className="text-[10px] uppercase tracking-widest font-sans font-bold text-gray-400 block mb-2">Skill Name</label>
-          <input
-            name="skill"
-            placeholder="e.g. Advanced Python"
-            className="w-full bg-white border-4 border-black px-4 py-3 font-bold focus:outline-none transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
-            required
-          />
-        </div>
-        <div>
-          <label className="text-[10px] uppercase tracking-widest font-sans font-bold text-gray-400 block mb-2">Description</label>
-          <textarea
-            name="description"
-            rows={3}
-            placeholder="Tell others what you can offer or what you're looking for..."
-            className="w-full bg-white border-4 border-black px-4 py-3 font-bold focus:outline-none transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] resize-none"
-          />
-        </div>
-        <div>
-          <label className="text-[10px] uppercase tracking-widest font-sans font-bold text-gray-400 block mb-2">Meeting Password (Optional)</label>
-          <input
-            name="password"
-            type="password"
-            placeholder="Leave empty for public room"
-            className="w-full bg-white border-4 border-black px-4 py-3 font-bold focus:outline-none transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
-          />
-        </div>
-        <div className="flex gap-3 pt-4">
-          <Button type="submit" className="flex-1 bg-[#FF80BF] text-black">Post Now</Button>
-          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-        </div>
-      </form>
-    </motion.div>
-  </div>
-);
-
-const Dashboard = ({ user, profile, onlineConnections, pendingRequests, onJoinRoom }: { 
-  user: any, 
-  profile: UserProfile | null, 
-  onlineConnections: UserProfile[], 
-  pendingRequests: ConnectionRequest[],
-  onJoinRoom: (id: string) => void
-}) => {
-  const [postsSnapshot, postsLoading] = useCollection(query(collection(db, 'posts'), orderBy('createdAt', 'desc')));
-  const [isPostModalOpen, setIsPostModalOpen] = useState(false);
-
-  const handleAcceptRequest = async (request: ConnectionRequest) => {
-    try {
-      await updateDoc(doc(db, 'connectionRequests', request.id), { status: 'accepted' });
-      await updateDoc(doc(db, 'users', user.uid), {
-        connections: arrayUnion(request.fromUid)
-      });
-      await updateDoc(doc(db, 'users', request.fromUid), {
-        connections: arrayUnion(user.uid)
-      });
-    } catch (err) {
-      console.error("Failed to accept request:", err);
+    // 2. Draw Annotations on top
+    if (canvasRef.current) {
+      ctx.drawImage(canvasRef.current, 0, 0, width, height);
     }
+
+    const base64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+    setSlides(prev => [...prev, base64]);
   };
 
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-      {/* Left: Study Desk Status */}
-      <div className="lg:col-span-3 space-y-6">
-        <Card className="relative overflow-hidden">
-          <div className="absolute top-0 right-0 p-4">
-            <Lamp className={cn("w-6 h-6 transition-colors", profile?.skillsToTeach?.length ? "text-yellow-500" : "text-gray-300")} />
-          </div>
-          <h3 className="text-lg font-bold mb-4">Your Desk</h3>
-          <div className="space-y-4">
-            <div>
-              <label className="text-[10px] uppercase tracking-wider text-gray-400 font-sans font-bold">College</label>
-              <p className="text-sm italic">{profile?.college || 'Not set'}</p>
-            </div>
-            <div>
-              <label className="text-[10px] uppercase tracking-wider text-gray-400 font-sans font-bold">Teaching</label>
-              <div className="flex flex-wrap gap-1 mt-1">
-                {profile?.skillsToTeach?.map(s => (
-                  <span key={s} className="text-[10px] bg-[#f5f5f0] px-2 py-1 rounded-full">{s}</span>
-                )) || <p className="text-xs text-gray-400 italic">No skills added</p>}
-              </div>
-            </div>
-          </div>
-        </Card>
-
-        {pendingRequests.length > 0 && (
-          <Card className="bg-[#FF80BF] border-4 border-black">
-            <h3 className="text-sm font-bold mb-4 uppercase tracking-widest font-sans">Pending Requests</h3>
-            <div className="space-y-3">
-              {pendingRequests.map(req => (
-                <div key={req.id} className="flex items-center justify-between gap-2 p-2 bg-white border-2 border-black">
-                  <span className="text-xs font-bold truncate">{req.fromName}</span>
-                  <div className="flex gap-1">
-                    <button onClick={() => handleAcceptRequest(req)} className="p-1 bg-green-500 text-white border border-black hover:translate-y-[-1px] transition-transform">
-                      <Check className="w-3 h-3" />
-                    </button>
-                    <button onClick={() => updateDoc(doc(db, 'connectionRequests', req.id), { status: 'declined' })} className="p-1 bg-red-500 text-white border border-black hover:translate-y-[-1px] transition-transform">
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-        )}
-      </div>
-
-      {/* Center: Bulletin Board (Posts) */}
-      <div className="lg:col-span-6 space-y-6">
-        <div className="flex justify-between items-center">
-          <h2 className="text-3xl font-light italic">Bulletin Board</h2>
-          <Button onClick={() => setIsPostModalOpen(true)}>
-            <Plus className="w-4 h-4" />
-            Post a Skill
-          </Button>
-        </div>
-
-        <div className="space-y-4">
-          {postsLoading ? (
-            <div className="text-center py-20 text-gray-400 italic">Loading posts...</div>
-          ) : postsSnapshot?.docs.length === 0 ? (
-            <div className="text-center py-20 text-gray-400 italic">The board is empty. Be the first to post!</div>
-          ) : (
-            postsSnapshot?.docs.map((doc: any) => {
-              const post = doc.data();
-              return (
-                <motion.div key={doc.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-                  <Card className="hover:border-[#5A5A40] transition-colors group cursor-pointer">
-                    <div className="flex justify-between items-start mb-4">
-                      <div className="flex items-center gap-3">
-                        <img src={post.authorPhoto || `https://ui-avatars.com/api/?name=${post.authorName}`} alt={post.authorName} className="w-10 h-10 rounded-full border border-gray-100" referrerPolicy="no-referrer" />
-                        <div>
-                          <h4 className="font-bold text-sm">{post.authorName}</h4>
-                          <p className="text-[10px] text-gray-400 uppercase tracking-widest font-sans">{post.type === 'teach' ? 'Offering' : 'Seeking'}</p>
-                        </div>
-                      </div>
-                      <span className={cn("text-[10px] px-3 py-1 rounded-full font-sans font-bold uppercase tracking-wider", post.type === 'teach' ? "bg-green-50 text-green-700" : "bg-blue-50 text-blue-700")}>{post.skill}</span>
-                    </div>
-                    <p className="text-gray-600 text-sm leading-relaxed mb-4">{post.description}</p>
-                    <div className="flex justify-between items-center pt-4 border-t border-[#f5f5f0]">
-                      <span className="text-[10px] text-gray-400 font-sans">{post.createdAt?.toDate().toLocaleDateString()}</span>
-                      <Button variant="ghost" className="text-xs group-hover:bg-[#5A5A40] group-hover:text-white" onClick={() => onJoinRoom(doc.id)}>
-                        {post.password ? <Lock className="w-3 h-3 text-amber-500" /> : <VideoIcon className="w-3 h-3" />}
-                        Join Call
-                      </Button>
-                    </div>
-                  </Card>
-                </motion.div>
-              );
-            })
-          )}
-        </div>
-      </div>
-
-      {/* Right: Online Connections & Chat */}
-      <div className="lg:col-span-3 space-y-6">
-        <Chat user={user} />
-        <Card>
-          <h3 className="text-sm font-bold mb-4 uppercase tracking-widest font-sans text-gray-400">Connections Online</h3>
-          <div className="space-y-4">
-            {onlineConnections.length === 0 ? (
-              <p className="text-xs text-gray-400 italic">No connections online</p>
-            ) : (
-              onlineConnections.map(conn => (
-                <div key={conn.uid} className="flex items-center gap-3">
-                  <div className="relative">
-                    <img src={conn.photoURL || `https://ui-avatars.com/api/?name=${conn.displayName}`} className="w-8 h-8 rounded-full border border-black" referrerPolicy="no-referrer" />
-                    <div className="absolute bottom-0 right-0 w-2 h-2 bg-green-500 rounded-full border-2 border-white" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-xs font-bold">{conn.displayName}</p>
-                    <p className="text-[10px] text-gray-400">{conn.college}</p>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </Card>
-      </div>
-
-      {isPostModalOpen && <PostModal user={user} profile={profile} onClose={() => setIsPostModalOpen(false)} />}
-    </div>
-  );
-};
-
-const Explore = ({ user, profile }: { user: any, profile: UserProfile | null }) => {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [results, setResults] = useState<UserProfile[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) return;
-    setLoading(true);
+  const sendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim()) return;
     try {
-      const q = query(
-        collection(db, 'users'), 
-        where('username', '>=', searchQuery.toLowerCase()), 
-        where('username', '<=', searchQuery.toLowerCase() + '\uf8ff'),
-        limit(10)
-      );
-      const snap = await getDocs(q);
-      setResults(snap.docs.map(doc => doc.data() as UserProfile).filter(u => u.uid !== user.uid));
-    } catch (err) {
-      console.error("Search failed:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const sendRequest = async (targetUser: UserProfile) => {
-    try {
-      const requestId = `${user.uid}_${targetUser.uid}`;
-      await setDoc(doc(db, 'connectionRequests', requestId), {
-        fromUid: user.uid,
-        fromName: profile?.displayName || user.displayName,
-        toUid: targetUser.uid,
-        status: 'pending',
+      await addDoc(collection(db, 'messages'), {
+        roomId,
+        authorUid: user.uid,
+        authorName: user.displayName,
+        text: input.trim(),
         createdAt: serverTimestamp()
       });
-      alert(`Request sent to ${targetUser.displayName}!`);
-    } catch (err) {
-      console.error("Failed to send request:", err);
+      setInput('');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'messages');
     }
   };
 
-  return (
-    <div className="space-y-8">
-      <div className="flex flex-col gap-4">
-        <h2 className="text-3xl font-light italic">Explore SkillSwap</h2>
-        <div className="flex gap-4">
-          <input 
-            type="text" 
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-            placeholder="Search by username..."
-            className="flex-1 bg-white border-4 border-black p-4 text-lg font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] focus:translate-x-[2px] focus:translate-y-[2px] focus:shadow-none transition-all outline-none"
-          />
-          <Button onClick={handleSearch} disabled={loading}>
-            <Search className="w-5 h-5" />
-            {loading ? 'Searching...' : 'Search'}
-          </Button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {results.map(u => (
-          <Card key={u.uid} className="hover:border-[#5A5A40] transition-all">
-            <div className="flex items-center gap-4 mb-4">
-              <img src={u.photoURL} className="w-16 h-16 rounded-full border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" referrerPolicy="no-referrer" />
-              <div>
-                <h3 className="font-bold text-lg">{u.displayName}</h3>
-                <p className="text-xs text-gray-400">@{u.username}</p>
-              </div>
-            </div>
-            <p className="text-sm text-gray-600 mb-4 line-clamp-2 italic">"{u.bio || 'No bio yet'}"</p>
-            <div className="flex flex-wrap gap-1 mb-6">
-              {u.skillsToTeach?.map(s => (
-                <span key={s} className="text-[10px] bg-[#f5f5f0] px-2 py-1 rounded-full border border-black">{s}</span>
-              ))}
-            </div>
-            <Button 
-              variant="secondary" 
-              className="w-full"
-              onClick={() => sendRequest(u)}
-              disabled={profile?.connections?.includes(u.uid)}
-            >
-              <UserPlus className="w-4 h-4" />
-              {profile?.connections?.includes(u.uid) ? 'Connected' : 'Connect'}
-            </Button>
-          </Card>
-        ))}
-        {!loading && searchQuery && results.length === 0 && (
-          <div className="col-span-full text-center py-20 italic text-gray-400">No users found with that username.</div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-const SessionsView = ({ user, sessions }: { user: any, sessions: SessionRecord[] }) => {
-  return (
-    <div className="space-y-8">
-      <h2 className="text-3xl font-light italic">Session History</h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {sessions.map(s => (
-          <Card key={s.id} className="flex flex-col gap-4">
-            <div className="flex justify-between items-start">
-              <div className="flex items-center gap-2">
-                <Calendar className="w-4 h-4 text-[#5A5A40]" />
-                <span className="text-sm font-bold">{s.createdAt?.toDate().toLocaleDateString()}</span>
-              </div>
-              <div className="px-3 py-1 bg-[#f5f5f0] rounded-full text-[10px] font-bold uppercase tracking-widest">
-                {Math.floor(s.duration / 60)}m {s.duration % 60}s
-              </div>
-            </div>
-            <div className="flex items-center gap-4">
-              <div className="flex -space-x-2">
-                {s.participants.slice(0, 3).map(p => (
-                  <div key={p} className="w-8 h-8 rounded-full bg-gray-200 border-2 border-white" />
-                ))}
-                {s.participants.length > 3 && (
-                  <div className="w-8 h-8 rounded-full bg-black text-white text-[10px] flex items-center justify-center border-2 border-white">
-                    +{s.participants.length - 3}
-                  </div>
-                )}
-              </div>
-              <p className="text-xs text-gray-500">{s.participants.length} Participants</p>
-            </div>
-            <Button variant="ghost" className="w-full mt-2 text-xs">
-              View Recap
-            </Button>
-          </Card>
-        ))}
-        {sessions.length === 0 && (
-          <div className="col-span-full text-center py-20 italic text-gray-400">You haven't participated in any sessions yet.</div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-const ProfileView = ({ user, profile, onUpdate }: { user: any, profile: UserProfile | null, onUpdate: (p: UserProfile) => void }) => {
-  const [editing, setEditing] = useState(false);
-  const [formData, setFormData] = useState<Partial<UserProfile>>(profile || {});
-  const [newCert, setNewCert] = useState({ name: '', url: '', issuedBy: '' });
-
-  const handleSave = async () => {
+  const handleEndSession = async () => {
+    setIsGeneratingReport(true);
+    let reportText = '';
+    let slideUrls: string[] = [];
+    
     try {
-      const updated = { ...profile, ...formData };
-      await updateDoc(doc(db, 'users', user.uid), updated);
-      onUpdate(updated as UserProfile);
-      setEditing(false);
-    } catch (err) {
-      console.error("Save failed:", err);
-    }
-  };
+      // Upload slides to Storage
+      for (let i = 0; i < slides.length; i++) {
+        const slideBase64 = slides[i];
+        const storageRef = ref(storage, `sessions/${roomId}/slide_${Date.now()}_${i}.jpg`);
+        const blob = await (await fetch(`data:image/jpeg;base64,${slideBase64}`)).blob();
+        await uploadBytes(storageRef, blob);
+        const url = await getDownloadURL(storageRef);
+        slideUrls.push(url);
+      }
 
-  const addCertificate = async () => {
-    if (!newCert.name || !newCert.url) return;
-    try {
-      const updatedCerts = [...(profile?.certificates || []), newCert];
-      await updateDoc(doc(db, 'users', user.uid), { certificates: updatedCerts });
-      onUpdate({ ...profile!, certificates: updatedCerts });
-      setNewCert({ name: '', url: '', issuedBy: '' });
-    } catch (err) {
-      console.error("Failed to add certificate:", err);
-    }
-  };
-
-  return (
-    <div className="max-w-4xl mx-auto space-y-12">
-      <div className="flex flex-col md:flex-row gap-8 items-start">
-        <div className="relative group">
-          <img src={profile?.photoURL} className="w-48 h-48 rounded-[40px] border-8 border-black shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] object-cover" referrerPolicy="no-referrer" />
-          <label className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer rounded-[40px]">
-            <Camera className="w-8 h-8 text-white" />
-            <input type="file" className="hidden" onChange={async (e) => {
-              const file = e.target.files?.[0];
-              if (file) {
-                // In a real app, upload to storage. Here we'll use local preview
-                const reader = new FileReader();
-                reader.onload = async (ev) => {
-                  const url = ev.target?.result as string;
-                  await updateDoc(doc(db, 'users', user.uid), { photoURL: url });
-                  onUpdate({ ...profile!, photoURL: url });
-                };
-                reader.readAsDataURL(file);
-              }
-            }} />
-          </label>
-        </div>
+      if (slides.length > 0 || (messagesSnap && messagesSnap.docs.length > 0)) {
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+        const parts: any[] = [];
         
-        <div className="flex-1 space-y-4">
-          <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-4xl font-black uppercase tracking-tighter">{profile?.displayName}</h1>
-              <p className="text-[#5A5A40] font-bold italic">@{profile?.username || 'no-username'}</p>
-            </div>
-            <Button onClick={() => setEditing(!editing)}>
-              {editing ? 'Cancel' : 'Edit Profile'}
-            </Button>
+        slides.forEach((base64, index) => {
+          parts.push({ text: `Slide ${index + 1}:` });
+          parts.push({ inlineData: { data: base64, mimeType: 'image/jpeg' } });
+        });
+        
+        const chatHistory = messagesSnap?.docs?.map(d => `${d.data().authorName}: ${d.data().text}`).join('\n');
+        if (chatHistory) {
+          parts.push({ text: `\nChat History:\n${chatHistory}` });
+        }
+        
+        parts.push({ text: `\nBased on the provided slides (images) and chat history from this study session, generate a comprehensive, in-depth session report using **Markdown formatting**. 
+
+The slides may contain handwritten annotations, diagrams, or text - please analyze these carefully as they represent the core teaching material. 
+
+For each slide, please provide:
+- **Verbatim Text Extraction**: List the exact text, words, or phrases written on the board/slide using bullet points.
+- **In-depth Analysis**: Explain the concepts taught in detail, summarizing the educational context of the annotations and drawings. Use bold text for key terms.
+
+Use high-level thinking to infer the educational context and provide a thorough explanation of the topics discussed. 
+
+**Structure the report as follows:**
+1. **Session Overview**: A brief summary of the overall topic.
+2. **Detailed Slide Analysis**: Break down each slide with headings (e.g., ### Slide 1).
+3. **Chat Summary**: Summarize the key questions and discussions from the chat.
+4. **Key Takeaways**: A bulleted list of the most important concepts.
+
+Ensure the final summary is structured, professional, and captures the essence of the entire session.` });
+        
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.1-pro-preview',
+          contents: { parts },
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }
+          }
+        });
+        reportText = response.text || 'No report generated.';
+      } else {
+        reportText = 'No slides captured and no chat history available to generate a report.';
+      }
+    } catch (err: any) {
+      console.error("AI Report generation failed", err);
+      const errorMessage = err.message || String(err);
+      
+      if (errorMessage.includes('PERMISSION_DENIED') || errorMessage.includes('Requested entity was not found')) {
+        reportText = "AI Report generation requires a Gemini API key. Please select a valid key with billing enabled.";
+        setHasApiKey(false);
+      } else {
+        reportText = "Failed to generate AI report due to an error.";
+      }
+    }
+
+    // Record session history
+    try {
+      await addDoc(collection(db, 'sessions'), {
+        roomId,
+        participants: participants.length > 0 ? participants : [user.uid],
+        createdAt: serverTimestamp(),
+        report: reportText,
+        slideUrls: slideUrls
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'sessions');
+    }
+    // Increment session count for user
+    const userRef = doc(db, 'users', user.uid);
+    const userSnap = await getDoc(userRef);
+    const currentCount = userSnap.exists() ? (userSnap.data().sessionCount || 0) : 0;
+    try {
+      await updateDoc(userRef, { sessionCount: currentCount + 1 });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+    }
+    
+    setIsGeneratingReport(false);
+    onLeave('Sessions');
+  };
+
+  const admitUser = async (userId: string) => {
+    try {
+      await updateDoc(doc(db, 'rooms', roomId, 'waitingUsers', userId), { status: 'admitted' });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}/waitingUsers/${userId}`);
+    }
+  };
+
+  const denyUser = async (userId: string) => {
+    try {
+      await updateDoc(doc(db, 'rooms', roomId, 'waitingUsers', userId), { status: 'denied' });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}/waitingUsers/${userId}`);
+    }
+  };
+
+  if (roomLoading || (!isHost && waitingLoading)) {
+    return <div className="flex items-center justify-center h-[85vh]"><Loader2 className="w-12 h-12 animate-spin" /></div>;
+  }
+
+  if (!isHost && (!waitingUserSnap || waitingUserSnap.status === 'waiting')) {
+    return (
+      <div className="min-h-[85vh] flex flex-col items-center justify-center p-8 overflow-hidden relative">
+        <Starfield />
+        <div className="neural-tide" />
+        
+        <div className="glass-panel border-beam p-12 max-w-2xl w-full text-center ambient-glow relative z-10">
+          <div className="nexus-sphere mb-12 mx-auto">
+            <Loader2 className="w-16 h-16 animate-spin text-cyan-400 drop-shadow-[0_0_10px_#22d3ee]" />
           </div>
           
-          {editing ? (
-            <div className="space-y-4 bg-white p-6 border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
-              <input 
-                value={formData.displayName} 
-                onChange={e => setFormData({...formData, displayName: e.target.value})}
-                placeholder="Display Name"
-                className="w-full p-2 border-2 border-black font-bold"
+          <h2 className="text-5xl font-black tracking-[0.2em] text-cyan-400 mb-6 tech-hover inline-block uppercase">
+            Waiting Room
+          </h2>
+          <p className="text-xl font-medium text-slate-400 mb-12 tracking-wide">
+            SYNAPTIC CONNECTION PENDING...
+            <br />
+            <span className="text-slate-500 text-sm font-mono mt-2 block">Please wait for the host to admit you to the session.</span>
+          </p>
+          
+          <button 
+            onClick={() => onLeave()} 
+            className="px-10 py-4 bg-red-500/20 border border-red-500/30 text-red-400 rounded-xl font-black uppercase tracking-widest hover:bg-red-500/30 transition-all active:scale-95 shadow-[0_0_20px_rgba(239,68,68,0.2)]"
+          >
+            Abort Connection
+          </button>
+        </div>
+        
+        <div className="absolute bottom-12 left-12 font-mono text-[10px] text-cyan-500/30 tracking-[0.5em] uppercase">
+          Neural Tide Protocol Active
+        </div>
+      </div>
+    );
+  }
+
+  if (!isHost && waitingUserSnap?.status === 'denied') {
+    return (
+      <div className="min-h-[85vh] flex flex-col items-center justify-center p-8 overflow-hidden relative">
+        <Starfield />
+        <div className="glass-panel border-beam p-12 max-w-2xl w-full text-center ambient-glow relative z-10">
+          <div className="w-24 h-24 bg-red-500/20 border border-red-500/30 rounded-full flex items-center justify-center mx-auto mb-8 shadow-[0_0_30px_rgba(239,68,68,0.3)]">
+            <X className="w-12 h-12 text-red-500" />
+          </div>
+          <h2 className="text-5xl font-black tracking-tighter text-red-500 mb-6 tech-hover inline-block">
+            ACCESS DENIED
+          </h2>
+          <p className="text-xl font-bold text-slate-400 mb-12">The host has declined your request to join this session.</p>
+          <button 
+            onClick={() => onLeave()} 
+            className="px-10 py-4 bg-slate-800 border border-white/10 text-white rounded-xl font-black uppercase tracking-widest hover:bg-slate-700 transition-all active:scale-95"
+          >
+            Return to Dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full max-w-7xl h-[85vh] glass-panel border-beam flex flex-col md:flex-row relative overflow-hidden">
+      {isGeneratingReport && (
+        <div className="absolute inset-0 bg-[#030712] z-[100] flex flex-col items-center justify-center p-8 overflow-hidden">
+          <Starfield />
+          
+          {/* Warm Ambient Glows */}
+          <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-amber-500/5 blur-[120px] rounded-full -z-10 animate-pulse" />
+          <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-cyan-500/5 blur-[120px] rounded-full -z-10 animate-pulse" style={{ animationDelay: '2s' }} />
+
+          <div className="relative z-10 text-center flex flex-col items-center">
+            <motion.div 
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="relative mb-12"
+            >
+              <div className="nexus-sphere w-32 h-32 border-cyan-500/20">
+                <BrainCircuit className="w-16 h-16 text-cyan-400 drop-shadow-[0_0_15px_rgba(34,211,238,0.8)] animate-pulse" />
+              </div>
+              <motion.div 
+                animate={{ rotate: 360 }}
+                transition={{ duration: 10, repeat: Infinity, ease: "linear" }}
+                className="absolute -inset-4 border border-dashed border-cyan-500/20 rounded-full"
               />
-              <input 
-                value={formData.username} 
-                onChange={e => setFormData({...formData, username: e.target.value.toLowerCase().replace(/\s/g, '')})}
-                placeholder="Username"
-                className="w-full p-2 border-2 border-black font-bold"
-              />
-              <textarea 
-                value={formData.bio} 
-                onChange={e => setFormData({...formData, bio: e.target.value})}
-                placeholder="Tell us about yourself..."
-                className="w-full p-2 border-2 border-black font-bold h-24"
-              />
-              <Button onClick={handleSave} className="w-full">Save Changes</Button>
+            </motion.div>
+            
+            <h2 className="text-4xl font-black tracking-[0.3em] text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-white to-purple-400 mb-8 glitch-text uppercase">
+              Synthesizing Session
+            </h2>
+            
+            <div className="max-w-md mx-auto">
+              <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden mb-8 relative">
+                <motion.div 
+                  className="h-full bg-gradient-to-r from-cyan-600 to-cyan-400 shadow-[0_0_15px_#22d3ee]"
+                  initial={{ width: "0%" }}
+                  animate={{ width: "100%" }}
+                  transition={{ duration: 8, ease: "easeInOut" }}
+                />
+              </div>
+              
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.5 }}
+                className="space-y-6"
+              >
+                <p className="text-cyan-400/60 font-cursive text-3xl">
+                  "Knowledge is the only asset that grows when shared."
+                </p>
+                <div className="flex flex-col items-center gap-2">
+                  <div className="flex items-center justify-center gap-3 text-[10px] font-bold text-slate-500 tracking-[0.4em] uppercase">
+                    <Loader2 className="w-4 h-4 animate-spin text-cyan-500" />
+                    Generating AI Session Report
+                  </div>
+                  <div className="text-[8px] text-slate-600 font-mono uppercase tracking-widest">
+                    Analyzing Annotations // Compiling Insights
+                  </div>
+                </div>
+              </motion.div>
             </div>
-          ) : (
-            <p className="text-lg italic text-gray-700 leading-relaxed">"{profile?.bio || 'No bio yet. Add one to tell others what you are about!'}"</p>
+          </div>
+          
+          <div className="absolute top-12 left-12 font-mono text-[10px] text-cyan-500/30 tracking-[0.5em] uppercase">
+            Neural Processing Unit Active
+          </div>
+          <div className="absolute bottom-12 right-12 font-mono text-[10px] text-cyan-500/30 tracking-[0.5em] uppercase">
+            Data Encryption: 256-bit AES
+          </div>
+        </div>
+      )}
+
+      {/* Video Area */}
+      <div className="flex-1 relative flex flex-col bg-slate-900/50 p-4 overflow-hidden">
+        <div className="flex justify-between items-center mb-4 z-10">
+          <div className="bg-red-500/20 text-red-400 px-3 py-1 font-semibold uppercase text-xs border border-red-500/30 flex items-center gap-2 animate-pulse rounded-full">
+            <div className="w-2 h-2 bg-red-400 rounded-full shadow-[0_0_8px_rgba(248,113,113,0.8)]" /> Live
+          </div>
+          <div className="bg-slate-800/50 text-slate-300 px-3 py-1 font-semibold uppercase text-xs border border-white/10 flex items-center gap-2 rounded-full">
+            Room ID: <span className="select-all bg-slate-700/50 px-2 py-0.5 rounded text-cyan-300">{roomId}</span>
+          </div>
+          <div className="bg-cyan-600/20 text-cyan-300 px-3 py-1 font-semibold uppercase text-xs border border-cyan-500/30 rounded-full">
+            {participants.length}/15 Joined
+          </div>
+        </div>
+
+        {/* Main Video / Screen Share Area */}
+        <div className="flex-1 relative flex items-center justify-center overflow-hidden mb-20 rounded-xl border border-white/10 bg-black shadow-[0_0_30px_rgba(0,0,0,0.5)]">
+          <video 
+            ref={localVideoRef} 
+            autoPlay 
+            playsInline 
+            muted 
+            className={cn("w-full h-full object-cover", isVirtualBg && "absolute opacity-0 pointer-events-none")}
+            style={{ transform: isScreenSharing ? 'none' : 'scaleX(-1)' }}
+          />
+          <canvas
+            ref={bgCanvasRef}
+            className={cn("w-full h-full object-cover", !isVirtualBg && "hidden")}
+            style={{ transform: isScreenSharing ? 'none' : 'scaleX(-1)' }}
+          />
+          {isWhiteboardOn && (
+            <div className="absolute inset-0 bg-slate-800 z-15" />
           )}
+          {isAnnotating && (
+            <canvas 
+              ref={canvasRef}
+              className="absolute inset-0 w-full h-full cursor-crosshair z-20"
+              onMouseDown={startDrawing}
+              onMouseMove={draw}
+              onMouseUp={stopDrawing}
+              onMouseOut={stopDrawing}
+            />
+          )}
+          {!isVideoOn && !isScreenSharing && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-900 z-10">
+              <div className="w-32 h-32 rounded-full bg-slate-800 flex items-center justify-center text-5xl font-bold text-slate-400 border border-white/10 shadow-[0_0_20px_rgba(0,0,0,0.5)]">
+                {user.displayName?.charAt(0)}
+              </div>
+            </div>
+          )}
+          
+          {/* Mini grid of other participants overlay */}
+          <div className="absolute top-4 right-4 flex flex-col gap-2 z-10">
+            {participants.filter((p: string) => p !== user.uid).map((pUid: string) => (
+              <div key={pUid} className="w-32 aspect-video bg-slate-800/80 backdrop-blur-sm border border-white/10 relative flex items-center justify-center rounded-lg overflow-hidden">
+                <Video className="w-6 h-6 text-slate-500" />
+                <span className="absolute bottom-1 left-1 bg-black/60 text-slate-300 text-[8px] font-semibold px-1.5 py-0.5 rounded border border-white/10">
+                  Participant
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+        
+        {/* Controls */}
+        <div className="absolute bottom-6 left-0 right-0 flex flex-col items-center gap-4 z-30 pointer-events-none">
+          {isVirtualBg && (
+            <div className="pointer-events-auto flex gap-4 glass-panel p-2 items-center rounded-full">
+              <select 
+                value={bgType} 
+                onChange={e => setBgType(e.target.value as any)}
+                className="bg-slate-800 text-slate-200 text-xs font-semibold rounded px-2 py-1 border border-white/10 outline-none"
+              >
+                <option value="blur">Blur</option>
+                <option value="color">Color</option>
+                <option value="image">Image</option>
+              </select>
+              
+              {bgType === 'color' && (
+                <input 
+                  type="color" 
+                  value={bgColor} 
+                  onChange={e => setBgColor(e.target.value)} 
+                  className="w-6 h-6 rounded cursor-pointer bg-transparent border-0 p-0" 
+                />
+              )}
+              
+              {bgType === 'image' && (
+                <input 
+                  type="text" 
+                  placeholder="Image URL..." 
+                  value={bgImage || ''} 
+                  onChange={e => setBgImage(e.target.value)} 
+                  className="bg-slate-800 text-slate-200 text-xs px-2 py-1 rounded border border-white/10 outline-none w-32"
+                />
+              )}
+            </div>
+          )}
+          {isAnnotating && (
+            <div className="pointer-events-auto flex gap-4 glass-panel p-2 items-center rounded-full">
+              <div className="flex items-center gap-2 px-2">
+                <label className="font-semibold text-xs uppercase text-slate-400">Color:</label>
+                <input type="color" value={strokeColor} onChange={e => setStrokeColor(e.target.value)} className="w-8 h-8 rounded cursor-pointer bg-transparent border-0 p-0" />
+              </div>
+              <div className="flex items-center gap-2 px-2 border-l border-white/10 pl-4">
+                <label className="font-semibold text-xs uppercase text-slate-400">Size:</label>
+                <input type="range" min="2" max="20" value={strokeWidth} onChange={e => setStrokeWidth(Number(e.target.value))} className="w-24 accent-cyan-500" />
+              </div>
+            </div>
+          )}
+          <div className="pointer-events-auto flex gap-2 glass-panel p-2 rounded-full">
+            <button onClick={toggleMic} className={cn("p-3 rounded-full hover:bg-slate-700/50 transition-colors text-slate-300", !isMicOn && "bg-red-500/20 text-red-400 hover:bg-red-500/30")} title="Toggle Mic">
+              {isMicOn ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+            </button>
+            <button onClick={toggleVideo} className={cn("p-3 rounded-full hover:bg-slate-700/50 transition-colors text-slate-300", !isVideoOn && "bg-red-500/20 text-red-400 hover:bg-red-500/30")} title="Toggle Video">
+              {isVideoOn ? <Video className="w-5 h-5" /> : <VideoOff className="w-5 h-5" />}
+            </button>
+            <button onClick={toggleScreenShare} className={cn("p-3 rounded-full hover:bg-slate-700/50 transition-colors text-slate-300", isScreenSharing && "bg-cyan-600/20 text-cyan-400 hover:bg-cyan-500/30")} title="Share Screen">
+              <MonitorUp className="w-5 h-5" />
+            </button>
+            <button onClick={() => setIsVirtualBg(!isVirtualBg)} className={cn("p-3 rounded-full hover:bg-slate-700/50 transition-colors text-slate-300", isVirtualBg && "bg-purple-600/20 text-purple-400 hover:bg-purple-500/30")} title="Virtual Filter">
+              <ImageIcon className="w-5 h-5" />
+            </button>
+            <button onClick={toggleWhiteboard} className={cn("p-3 rounded-full hover:bg-slate-700/50 transition-colors text-slate-300", isWhiteboardOn && "bg-slate-200 text-slate-900 hover:bg-slate-300")} title="Whiteboard">
+              <Presentation className="w-5 h-5" />
+            </button>
+            <button onClick={() => setIsAnnotating(!isAnnotating)} className={cn("p-3 rounded-full hover:bg-slate-700/50 transition-colors text-slate-300", isAnnotating && "bg-teal-500/20 text-teal-400 hover:bg-teal-500/30")} title="Annotate">
+              <PenTool className="w-5 h-5" />
+            </button>
+            {isAnnotating && (
+              <button onClick={clearAnnotation} className="p-3 rounded-full hover:bg-slate-700/50 transition-colors text-slate-300" title="Clear Annotations">
+                <Eraser className="w-5 h-5" />
+              </button>
+            )}
+            <button onClick={captureSlide} className="p-3 rounded-full hover:bg-slate-700/50 transition-colors text-slate-300 relative" title="Capture Slide for AI Report">
+              <Camera className="w-5 h-5" />
+              {slides.length > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow-[0_0_8px_rgba(248,113,113,0.8)]">
+                  {slides.length}
+                </span>
+              )}
+            </button>
+            <button onClick={handleEndSession} className="px-6 py-2 bg-red-500/20 text-red-400 font-semibold uppercase rounded-full border border-red-500/30 hover:bg-red-500/30 transition-colors ml-2 ambient-glow">
+              Leave
+            </button>
+          </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <Card className="bg-white">
-          <h3 className="text-xl font-black uppercase mb-4 flex items-center gap-2">
-            <Award className="w-5 h-5" />
-            Certificates
+      {/* Private Chat */}
+      <div className="w-full md:w-80 bg-slate-900/80 backdrop-blur-md border-l border-white/10 flex flex-col">
+        <div className="p-4 border-b border-white/10 bg-slate-800/50">
+          <h3 className="font-semibold uppercase tracking-widest text-sm text-slate-300 flex items-center gap-2">
+            <MessageSquare className="w-4 h-4 text-cyan-400" /> Room Chat
           </h3>
-          <div className="space-y-4">
-            {profile?.certificates?.map((cert, i) => (
-              <div key={i} className="p-4 bg-[#f5f5f0] border-2 border-black flex justify-between items-center">
-                <div>
-                  <p className="font-bold text-sm">{cert.name}</p>
-                  <p className="text-[10px] text-gray-400 uppercase tracking-widest">{cert.issuedBy}</p>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 bg-transparent">
+          {messagesSnap?.docs.map(docSnap => {
+            const msg = docSnap.data();
+            const isMe = msg.authorUid === user.uid;
+            return (
+              <div key={docSnap.id} className={cn("flex flex-col", isMe ? "items-end" : "items-start")}>
+                <span className="text-[10px] font-semibold text-slate-500 mb-1">{msg.authorName}</span>
+                <div className={cn(
+                  "p-3 font-medium text-sm max-w-[90%] rounded-2xl",
+                  isMe ? "bg-cyan-600/20 text-cyan-100 border border-cyan-500/30 rounded-tr-sm" : "bg-slate-800/80 text-slate-200 border border-white/10 rounded-tl-sm"
+                )}>
+                  {msg.text}
                 </div>
-                <a href={cert.url} target="_blank" className="text-[#0080FF] hover:underline text-xs font-bold">View</a>
               </div>
-            ))}
-            <div className="pt-4 border-t-2 border-black space-y-2">
-              <input 
-                placeholder="Cert Name" 
-                value={newCert.name} 
-                onChange={e => setNewCert({...newCert, name: e.target.value})}
-                className="w-full p-2 border border-black text-xs"
-              />
-              <input 
-                placeholder="URL" 
-                value={newCert.url} 
-                onChange={e => setNewCert({...newCert, url: e.target.value})}
-                className="w-full p-2 border border-black text-xs"
-              />
-              <Button variant="secondary" className="w-full text-xs" onClick={addCertificate}>Add Certificate</Button>
-            </div>
-          </div>
-        </Card>
+            );
+          })}
+          <div ref={chatEndRef} />
+        </div>
 
-        <Card className="bg-white">
-          <h3 className="text-xl font-black uppercase mb-4 flex items-center gap-2">
-            <BookOpen className="w-5 h-5" />
-            Skills
-          </h3>
-          <div className="space-y-6">
-            <div>
-              <label className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Teaching</label>
-              <div className="flex flex-wrap gap-2 mt-2">
-                {profile?.skillsToTeach?.map(s => (
-                  <span key={s} className="px-3 py-1 bg-green-100 text-green-800 border-2 border-black text-xs font-bold">{s}</span>
-                ))}
-              </div>
-            </div>
-            <div>
-              <label className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Learning</label>
-              <div className="flex flex-wrap gap-2 mt-2">
-                {profile?.skillsToLearn?.map(s => (
-                  <span key={s} className="px-3 py-1 bg-blue-100 text-blue-800 border-2 border-black text-xs font-bold">{s}</span>
-                ))}
-              </div>
-            </div>
-          </div>
-        </Card>
+        <form onSubmit={sendMessage} className="p-4 border-t border-white/10 flex gap-2 bg-slate-800/50">
+          <input 
+            type="text" 
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            placeholder="Type..." 
+            className="flex-1 bg-slate-900/50 border border-white/10 rounded-lg p-2 text-sm font-medium text-slate-200 focus:outline-none focus:border-cyan-500"
+          />
+          <button type="submit" className="bg-cyan-600/20 text-cyan-400 border border-cyan-500/30 p-2 rounded-lg hover:bg-cyan-500/30 transition-colors ambient-glow">
+            <Send className="w-5 h-5" />
+          </button>
+        </form>
       </div>
     </div>
   );
 };
-const SessionSummary = ({ snapshots, messages, onDone }: { snapshots: string[], messages: any[], onDone: () => void }) => {
-  const [slides, setSlides] = useState<{ title: string, content: string }[]>([]);
+
+
+// --- Main App Shell ---
+
+const MyConnectionsPage = ({ user }: { user: any }) => {
+  const [userData] = useDocumentData(doc(db, 'users', user.uid));
+  const [connections, setConnections] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const generateSlides = async () => {
-    setLoading(true);
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-      
-      const parts = snapshots.map(s => ({
-        inlineData: {
-          data: s.split(',')[1],
-          mimeType: 'image/png'
-        }
-      }));
-
-      const chatContext = messages.map(m => `${m.userName}: ${m.text}`).join('\n');
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-pro-preview',
-        contents: {
-          parts: [
-            ...parts,
-            { text: `Analyze these whiteboard snapshots and the following chat transcript from a study session to create a structured slide deck summary. 
-            
-            Chat Transcript:
-            ${chatContext}
-            
-            For each snapshot, provide a slide title and a concise summary of the key points discussed, using the chat context to enrich the explanation. If there are no snapshots but there is chat, generate summary slides based on the chat discussion.
-            
-            Return as a JSON array of objects with 'title' and 'content' properties.` }
-          ]
-        },
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                content: { type: Type.STRING }
-              },
-              required: ['title', 'content']
-            }
-          }
-        }
-      });
-
-      const data = JSON.parse(response.text);
-      setSlides(data);
-    } catch (err) {
-      console.error("Failed to generate slides:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    if (snapshots.length > 0 || messages.length > 0) generateSlides();
-  }, [snapshots, messages]);
+    if (!userData?.connections || userData.connections.length === 0) {
+      setConnections([]);
+      return;
+    }
+
+    const fetchConnections = async () => {
+      setLoading(true);
+      try {
+        const uids = userData.connections;
+        const results: any[] = [];
+        
+        // Firestore 'in' query limit is 10, so we chunk the requests
+        for (let i = 0; i < uids.length; i += 10) {
+          const chunk = uids.slice(i, i + 10);
+          const q = query(collection(db, 'users'), where('uid', 'in', chunk));
+          const snap = await getDocs(q);
+          results.push(...snap.docs.map(d => d.data()));
+        }
+        setConnections(results);
+      } catch (error) {
+        console.error("Error fetching connections:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchConnections();
+  }, [userData?.connections]);
 
   return (
-    <div className="fixed inset-0 bg-[#f5f5f0] z-[400] flex flex-col p-10 overflow-y-auto">
-      <div className="max-w-4xl mx-auto w-full">
-        <div className="flex justify-between items-center mb-12">
-          <div>
-            <h1 className="text-4xl font-serif italic mb-2">Session Recap</h1>
-            <p className="text-gray-600">AI-generated slide deck from your whiteboard notes</p>
-          </div>
-          <Button onClick={onDone} className="bg-[#5A5A40] text-white px-8 rounded-full">
-            Back to Desk
-          </Button>
-        </div>
-
-        {loading ? (
-          <div className="flex flex-col items-center justify-center py-20 gap-4">
-            <div className="w-12 h-12 border-4 border-[#5A5A40] border-t-transparent rounded-full animate-spin" />
-            <p className="font-sans font-bold uppercase tracking-widest text-xs text-[#5A5A40]">Gemini is drafting your slides...</p>
-          </div>
-        ) : (
-          <div className="space-y-8">
-            {slides.map((slide, i) => (
-              <motion.div 
-                key={i}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.1 }}
-                className="bg-white p-12 rounded-[40px] shadow-sm border border-[#e5e5e0] min-h-[500px] flex flex-col md:flex-row gap-12 items-center"
-              >
-                <div className="flex-1 w-full">
-                  <div className="mb-8">
-                    <span className="text-[10px] font-sans font-bold uppercase tracking-[0.2em] text-[#5A5A40]">Slide {i + 1}</span>
-                    <h2 className="text-3xl font-serif italic mt-2">{slide.title}</h2>
-                  </div>
-                  <div className="text-lg text-gray-700 leading-relaxed font-serif">
-                    {slide.content}
-                  </div>
-                </div>
-                {snapshots[i] && (
-                  <div className="flex-1 w-full">
-                    <img 
-                      src={snapshots[i]} 
-                      alt={`Whiteboard snapshot ${i + 1}`} 
-                      className="w-full h-auto rounded-3xl border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]"
-                      referrerPolicy="no-referrer"
-                    />
-                  </div>
-                )}
-              </motion.div>
-            ))}
-            {slides.length === 0 && !loading && (
-              <div className="text-center py-20 bg-white rounded-[40px] border border-dashed border-[#e5e5e0]">
-                <FileText className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-                <p className="text-gray-500">No whiteboard snapshots were saved during this session.</p>
-              </div>
-            )}
-          </div>
-        )}
+    <div className="w-full max-w-5xl glass-panel border-beam p-8 ambient-glow scroll-fade">
+      <div className="flex items-center gap-4 mb-8 border-b border-white/10 pb-4">
+        <Users className="w-10 h-10 text-cyan-400" />
+        <h2 className="text-4xl font-bold tracking-tight text-slate-200 tech-hover inline-block">My Connections</h2>
       </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="w-8 h-8 animate-spin text-cyan-500" />
+        </div>
+      ) : connections.length === 0 ? (
+        <div className="text-center py-12 text-slate-500 font-semibold text-xl">
+          You haven't connected with anyone yet. Explore to find peers!
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {connections.map((conn, i) => (
+            <div key={conn.uid} className="glass-panel border border-white/10 p-6 flex flex-col items-center text-center gap-4 scroll-fade" style={{ animationDelay: `${i * 0.1}s` }}>
+              <div className="relative">
+                <img src={conn.photoURL} alt={conn.username} className="w-20 h-20 rounded-full border-2 border-cyan-500/30 object-cover shadow-[0_0_15px_rgba(34,211,238,0.3)]" />
+                {conn.isOnline && (
+                  <div className="absolute bottom-0 right-0 w-4 h-4 bg-green-500 border-2 border-slate-900 rounded-full shadow-[0_0_8px_rgba(34,197,94,0.8)]" />
+                )}
+              </div>
+              <div>
+                <h3 className="font-bold text-xl text-slate-200">@{conn.username}</h3>
+                <p className="font-medium text-slate-400 text-sm">{conn.displayName}</p>
+              </div>
+              {conn.skills && conn.skills.length > 0 && (
+                <div className="flex flex-wrap justify-center gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider bg-cyan-600/20 text-cyan-300 border border-cyan-500/30 px-2 py-1 rounded-full">
+                    {conn.skills[0].name} ({conn.skills[0].level})
+                  </span>
+                </div>
+              )}
+              <div className="flex items-center gap-3 mt-2">
+                {conn.portfolioUrl && (
+                  <a href={conn.portfolioUrl} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-cyan-400 transition-colors">
+                    <ExternalLink className="w-4 h-4" />
+                  </a>
+                )}
+                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                  {conn.learningPreference || 'Visual'}
+                </span>
+              </div>
+              <div className="mt-auto pt-4 w-full border-t border-white/5 flex justify-center gap-4">
+                <button className="text-slate-400 hover:text-cyan-400 transition-colors" title="Send Message">
+                  <MessageSquare className="w-5 h-5" />
+                </button>
+                <button className="text-slate-400 hover:text-purple-400 transition-colors" title="Start Video Call">
+                  <Video className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
 
 export default function App() {
   const [user, loading] = useAuthState(auth);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
-  const [isPostModalOpen, setIsPostModalOpen] = useState(false);
-  const [currentRoomId, setCurrentRoomId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'explore' | 'lab' | 'sessions' | 'profile'>('dashboard');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<UserProfile[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [showVoice, setShowVoice] = useState(false);
+  const [activeTab, setActiveTab] = useState('Study Desk');
+  const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
 
-  const [connectionsSnapshot] = useCollection(
-    user ? query(collection(db, 'users'), where('uid', 'in', profile?.connections?.length ? profile.connections : ['none'])) : null
-  );
-  const onlineConnections = connectionsSnapshot?.docs
-    .map(doc => doc.data() as UserProfile)
-    .filter(c => c.isOnline);
-
-  const [requestsSnapshot] = useCollection(
-    user ? query(collection(db, 'connectionRequests'), where('toUid', '==', user.uid), where('status', '==', 'pending')) : null
-  );
-  const pendingRequests = requestsSnapshot?.docs.map(doc => ({ id: doc.id, ...doc.data() } as ConnectionRequest));
-
-  const [sessionsSnapshot] = useCollection(
-    user ? query(collection(db, 'sessions'), where('participants', 'array-contains', user.uid), orderBy('createdAt', 'desc')) : null
-  );
-  const sessions = sessionsSnapshot?.docs.map(doc => ({ id: doc.id, ...doc.data() } as SessionRecord));
-
-  // Fetch or create profile on login
+  // Global mouse move for torch effect
   useEffect(() => {
-    if (user) {
-      const fetchProfile = async () => {
-        const docRef = doc(db, 'users', user.uid);
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          setProfile(docSnap.data() as UserProfile);
-        } else {
-          const newProfile: UserProfile = {
-            uid: user.uid,
-            displayName: user.displayName || 'Student',
-            email: user.email || '',
-            photoURL: user.photoURL || '',
-            karma: 0,
-          };
-          await setDoc(docRef, newProfile);
-          setProfile(newProfile);
-          setIsProfileModalOpen(true); // Prompt for college info
-        }
-      };
-      fetchProfile();
-    }
+    const handleMouseMove = (e: MouseEvent) => {
+      document.documentElement.style.setProperty('--mouse-x', `${e.clientX}px`);
+      document.documentElement.style.setProperty('--mouse-y', `${e.clientY}px`);
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => window.removeEventListener('mousemove', handleMouseMove);
+  }, []);
+
+  // Handle online status
+  useEffect(() => {
+    if (!user) return;
+    const handleBeforeUnload = () => {
+      updateDoc(doc(db, 'users', user.uid), { isOnline: false, lastSeen: serverTimestamp() }).catch(err => handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`));
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      handleBeforeUnload();
+    };
   }, [user]);
 
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [isRadioOn, setIsRadioOn] = useState(false);
-
-  const handleLogin = async () => {
-    if (isLoggingIn) return;
-    setIsLoggingIn(true);
-    try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (error: any) {
-      if (error.code !== 'auth/cancelled-popup-request' && error.code !== 'auth/popup-closed-by-user') {
-        console.error("Login error:", error);
+  const handleSignOut = async () => {
+    if (user) {
+      try {
+        await updateDoc(doc(db, 'users', user.uid), { isOnline: false, lastSeen: serverTimestamp() });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
       }
-    } finally {
-      setIsLoggingIn(false);
     }
+    await signOut(auth);
   };
-  const handleLogout = () => signOut(auth);
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-[#f5f5f0] flex items-center justify-center">
-        <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-        >
-          <Coffee className="w-12 h-12 text-[#5A5A40]" />
-        </motion.div>
-      </div>
-    );
+    return <LoadingScreen />;
   }
 
   if (!user) {
-    return (
-      <div className="min-h-screen bg-[#0080FF] font-sans selection:bg-[#FFD700] selection:text-black flex items-center justify-center p-4 md:p-12 overflow-hidden">
-        <div className="w-full max-w-6xl aspect-[16/10] relative">
-          <BrutalistHero />
-          
-          {/* Floating Action Button */}
-          <motion.button
-            whileHover={{ scale: 1.1, rotate: 5 }}
-            whileTap={{ scale: 0.9 }}
-            onClick={handleLogin}
-            className="absolute -bottom-8 -right-8 bg-[#FF80BF] border-8 border-black p-8 rounded-full shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] z-50 group"
-          >
-            <div className="flex flex-col items-center">
-              <GraduationCap className="w-12 h-12 text-black mb-2" />
-              <span className="font-black text-xl uppercase tracking-tighter">JOIN NOW</span>
-            </div>
-          </motion.button>
-
-          {/* Background shapes */}
-          <div className="absolute -top-20 -left-20 w-64 h-64 bg-[#C0A0FF] rounded-full border-8 border-black -z-10" />
-          <div className="absolute -bottom-20 -left-20 w-48 h-48 bg-[#FFD700] border-8 border-black rotate-12 -z-10" />
-        </div>
-      </div>
-    );
+    return <LoginScreen />;
   }
 
   return (
-    <div className="min-h-screen bg-[#0080FF] font-sans text-[#1a1a1a]">
-      <BackgroundVisuals />
-      {currentRoomId && (
-        <VideoRoom 
-          roomId={currentRoomId} 
-          user={user} 
-          onLeave={() => setCurrentRoomId(null)}
-          onSessionEnd={async (duration, participants) => {
-            try {
-              await addDoc(collection(db, 'sessions'), {
-                userId: user.uid,
-                roomId: currentRoomId,
-                duration,
-                participants,
-                createdAt: serverTimestamp()
-              });
-            } catch (err) {
-              console.error("Failed to save session record:", err);
-            }
-          }}
-        />
-      )}
-      {/* Sidebar/Nav */}
-      <nav className="fixed top-0 left-0 right-0 bg-white/80 backdrop-blur-md border-b border-[#e5e5e0] z-50">
-        {/* Announcement Bar */}
-        <div className="bg-[#5A5A40] text-white py-1.5 overflow-hidden whitespace-nowrap relative">
-          <motion.div 
-            animate={{ x: ["100%", "-100%"] }}
-            transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
-            className="inline-block text-[10px] font-sans font-bold uppercase tracking-[0.2em]"
-          >
-            📢 New: AI Lab is now live! Analyze engineering diagrams with Gemini 3.1 Pro • Join the "React Masterclass" session at 6 PM • Earn Karma by helping peers!
-          </motion.div>
+    <div className="min-h-screen bg-transparent flex flex-col font-sans selection:bg-cyan-500/30 selection:text-cyan-100">
+      <div className="torch-effect" />
+      
+      {/* Top Banner */}
+      <div className="bg-slate-900/80 backdrop-blur-md text-slate-300 text-[10px] sm:text-xs font-semibold tracking-widest py-2 px-4 flex items-center gap-2 border-b border-white/10">
+        <div className="w-2 h-2 bg-cyan-400 rounded-full animate-pulse shadow-[0_0_8px_rgba(34,211,238,0.8)]" />
+        JOIN THE "REACT MASTERCLASS" SESSION AT 6 PM • EARN KARMA BY HELPING PEERS!
+      </div>
+
+      {/* Navbar */}
+      <nav className="h-16 glass-panel flex items-center justify-between px-6 sticky top-0 z-30">
+        <div className="flex items-center gap-8">
+          <div className="flex items-center gap-2">
+            <GraduationCap className="w-6 h-6 text-cyan-400 drop-shadow-[0_0_8px_rgba(34,211,238,0.8)]" />
+            <span className="text-xl font-bold tracking-tight text-slate-200 hidden sm:block">SkillSwap</span>
+          </div>
+          
+          <div className="hidden md:flex items-center gap-6 text-sm font-semibold text-slate-400">
+            {['Study Desk', 'Explore', 'My Connections', 'Sessions', 'AI Solver', 'Profile'].map(tab => (
+              <button 
+                key={tab}
+                onClick={() => { setActiveTab(tab); setActiveRoomId(null); }}
+                className={cn(
+                  "hover:text-cyan-400 transition-colors relative py-2",
+                  activeTab === tab && !activeRoomId && "text-cyan-400 drop-shadow-[0_0_8px_rgba(34,211,238,0.5)]"
+                )}
+              >
+                {tab === 'AI Solver' && <BrainCircuit className="w-4 h-4 inline-block mr-1 mb-0.5" />}
+                {tab}
+                {activeTab === tab && !activeRoomId && (
+                  <motion.div layoutId="nav-indicator" className="absolute bottom-0 left-0 right-0 h-0.5 bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)]" />
+                )}
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="max-w-7xl mx-auto px-6 h-20 flex justify-between items-center">
-          <div className="flex items-center gap-8">
-            <div className="flex items-center gap-2 text-xl font-bold text-[#5A5A40]">
-              <GraduationCap className="w-6 h-6" />
-              <span>SkillSwap</span>
-            </div>
-            <div className="hidden md:flex items-center gap-6 text-sm font-sans uppercase tracking-widest font-medium text-gray-500">
-              <button 
-                onClick={() => setActiveTab('dashboard')}
-                className={cn(
-                   "pb-1 transition-all cursor-pointer",
-                   activeTab === 'dashboard' ? "text-[#5A5A40] border-b-2 border-[#5A5A40]" : "hover:text-[#5A5A40]"
-                )}
-              >
-                Dashboard
-              </button>
-              <button 
-                onClick={() => setActiveTab('explore')}
-                className={cn(
-                   "pb-1 transition-all cursor-pointer",
-                   activeTab === 'explore' ? "text-[#5A5A40] border-b-2 border-[#5A5A40]" : "hover:text-[#5A5A40]"
-                )}
-              >
-                Explore
-              </button>
-              <button 
-                onClick={() => setActiveTab('sessions')}
-                className={cn(
-                   "pb-1 transition-all cursor-pointer",
-                   activeTab === 'sessions' ? "text-[#5A5A40] border-b-2 border-[#5A5A40]" : "hover:text-[#5A5A40]"
-                )}
-              >
-                Sessions
-              </button>
-              <button 
-                onClick={() => setActiveTab('lab')}
-                className={cn(
-                   "pb-1 transition-all cursor-pointer flex items-center gap-2",
-                   activeTab === 'lab' ? "text-[#5A5A40] border-b-2 border-[#5A5A40]" : "hover:text-[#5A5A40]"
-                )}
-              >
-                <BrainCircuit className="w-3 h-3" />
-                AI Lab
-              </button>
-              <button 
-                onClick={() => setActiveTab('profile')}
-                className={cn(
-                   "pb-1 transition-all cursor-pointer",
-                   activeTab === 'profile' ? "text-[#5A5A40] border-b-2 border-[#5A5A40]" : "hover:text-[#5A5A40]"
-                )}
-              >
-                Profile
-              </button>
-            </div>
-          </div>
-          <div className="flex items-center gap-4">
-            <button 
-              onClick={() => setShowVoice(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-white border border-[#e5e5e0] rounded-full text-xs font-sans font-bold uppercase tracking-widest text-[#5A5A40] hover:bg-[#f5f5f0] transition-all shadow-sm"
-            >
-              <Volume2 className="w-4 h-4" />
-              Voice
-            </button>
-            <div className="flex items-center gap-2 px-4 py-2 bg-[#f5f5f0] rounded-full text-sm font-sans font-medium">
-              <Sparkles className="w-4 h-4 text-yellow-600" />
-              <span>{profile?.karma || 0} Karma</span>
-            </div>
-            <button
-              onClick={() => setIsProfileModalOpen(true)}
-              className="w-10 h-10 rounded-full overflow-hidden border-2 border-white shadow-sm"
-            >
-              <img src={user.photoURL || ''} alt="Profile" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
-            </button>
-            <button onClick={handleLogout} className="p-2 text-gray-400 hover:text-red-500 transition-colors">
-              <LogOut className="w-5 h-5" />
-            </button>
-          </div>
+
+        <div className="flex items-center gap-4">
+          <button className="hidden sm:flex items-center gap-2 px-4 py-1.5 bg-slate-800/50 border border-white/10 rounded-full font-semibold text-sm hover:bg-slate-700/50 transition-all text-slate-200 ambient-glow">
+            <Star className="w-4 h-4 text-cyan-400" /> Karma
+          </button>
+          <button onClick={() => { setActiveTab('Profile'); setActiveRoomId(null); }} className="w-8 h-8 rounded-full border border-white/10 overflow-hidden bg-slate-800 hover:scale-110 transition-transform">
+            <img src={user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.uid}`} alt="Avatar" className="w-full h-full object-cover" />
+          </button>
+          <button onClick={handleSignOut} className="text-slate-400 hover:text-cyan-400 transition-colors" title="Sign Out">
+            <LogOut className="w-5 h-5" />
+          </button>
         </div>
       </nav>
 
-      <main className="max-w-7xl mx-auto px-6 pt-32 pb-20 relative z-10">
-        <div className="bg-[#FFD700] border-4 border-black shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] p-8 rounded-3xl min-h-[80vh]">
-          {activeTab === 'lab' && <AILab user={user} />}
-          {activeTab === 'dashboard' && <Dashboard user={user} profile={profile} onlineConnections={onlineConnections || []} pendingRequests={pendingRequests || []} onJoinRoom={setCurrentRoomId} />}
-          {activeTab === 'explore' && <Explore user={user} profile={profile} />}
-          {activeTab === 'sessions' && <SessionsView user={user} sessions={sessions || []} />}
-          {activeTab === 'profile' && <ProfileView user={user} profile={profile} onUpdate={setProfile} />}
-        </div>
+      {/* Main Content Area */}
+      <main className="flex-1 p-4 sm:p-8 flex justify-center items-start">
+        {activeRoomId ? (
+        <VideoRoom user={user} roomId={activeRoomId} onLeave={(tab) => { setActiveRoomId(null); if (tab) setActiveTab(tab); }} />
+        ) : (
+          <>
+            {activeTab === 'Study Desk' && <Dashboard user={user} onJoinRoom={(id) => setActiveRoomId(id)} />}
+            {activeTab === 'Explore' && <ExplorePage user={user} />}
+            {activeTab === 'My Connections' && <MyConnectionsPage user={user} />}
+            {activeTab === 'Sessions' && <SessionsPage user={user} />}
+            {activeTab === 'AI Solver' && <AIDoubtSolver user={user} />}
+            {activeTab === 'Profile' && <ProfilePage user={user} />}
+          </>
+        )}
       </main>
-
-      {/* Modals */}
-      <AnimatePresence>
-        {isProfileModalOpen && (
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-6">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white border-8 border-black p-10 max-w-md w-full shadow-[16px_16px_0px_0px_rgba(0,0,0,1)]"
-            >
-              <h2 className="text-4xl font-black uppercase tracking-tighter mb-6">Setup Your Desk</h2>
-              <form className="space-y-6" onSubmit={async (e) => {
-                e.preventDefault();
-                const formData = new FormData(e.currentTarget);
-                const updatedProfile = {
-                  ...profile,
-                  college: formData.get('college') as string,
-                  bio: formData.get('bio') as string,
-                  skillsToTeach: (formData.get('teach') as string).split(',').map(s => s.trim()).filter(Boolean),
-                  skillsToLearn: (formData.get('learn') as string).split(',').map(s => s.trim()).filter(Boolean),
-                };
-                await setDoc(doc(db, 'users', user.uid), updatedProfile);
-                setProfile(updatedProfile as UserProfile);
-                setIsProfileModalOpen(false);
-              }}>
-                <div>
-                  <label className="text-[10px] uppercase tracking-widest font-sans font-bold text-gray-400 block mb-2">College Name</label>
-                  <input
-                    name="college"
-                    defaultValue={profile?.college}
-                    placeholder="e.g. IIT Delhi"
-                    className="w-full bg-white border-4 border-black px-4 py-3 font-bold focus:outline-none transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] uppercase tracking-widest font-sans font-bold text-gray-400 block mb-2">Skills You Can Teach (comma separated)</label>
-                  <input
-                    name="teach"
-                    defaultValue={profile?.skillsToTeach?.join(', ')}
-                    placeholder="Python, Guitar, UI Design"
-                    className="w-full bg-white border-4 border-black px-4 py-3 font-bold focus:outline-none transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] uppercase tracking-widest font-sans font-bold text-gray-400 block mb-2">Skills You Want to Learn</label>
-                  <input
-                    name="learn"
-                    defaultValue={profile?.skillsToLearn?.join(', ')}
-                    placeholder="React, French, Chess"
-                    className="w-full bg-white border-4 border-black px-4 py-3 font-bold focus:outline-none transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
-                  />
-                </div>
-                <div className="flex gap-3 pt-4">
-                  <Button type="submit" className="flex-1 bg-[#0080FF] text-white">Save Desk</Button>
-                  <Button type="button" variant="ghost" onClick={() => setIsProfileModalOpen(false)}>Cancel</Button>
-                </div>
-              </form>
-            </motion.div>
-          </div>
-        )}
-
-        {isPostModalOpen && (
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-6">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white border-8 border-black p-10 max-w-md w-full shadow-[16px_16px_0px_0px_rgba(0,0,0,1)]"
-            >
-              <h2 className="text-4xl font-black uppercase tracking-tighter mb-6">Post to Bulletin</h2>
-              <form className="space-y-6" onSubmit={async (e) => {
-                e.preventDefault();
-                const formData = new FormData(e.currentTarget);
-                await addDoc(collection(db, 'posts'), {
-                  authorUid: user.uid,
-                  authorName: user.displayName,
-                  authorPhoto: user.photoURL,
-                  type: formData.get('type'),
-                  skill: formData.get('skill'),
-                  description: formData.get('description'),
-                  password: formData.get('password') || null,
-                  createdAt: serverTimestamp(),
-                });
-                setIsPostModalOpen(false);
-              }}>
-                <div>
-                  <label className="text-[10px] uppercase tracking-widest font-sans font-bold text-gray-400 block mb-2">I want to...</label>
-                  <select
-                    name="type"
-                    className="w-full bg-white border-4 border-black px-4 py-3 font-bold focus:outline-none transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] appearance-none"
-                  >
-                    <option value="teach">Teach a Skill</option>
-                    <option value="learn">Learn a Skill</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-[10px] uppercase tracking-widest font-sans font-bold text-gray-400 block mb-2">Skill Name</label>
-                  <input
-                    name="skill"
-                    placeholder="e.g. Advanced Python"
-                    className="w-full bg-white border-4 border-black px-4 py-3 font-bold focus:outline-none transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] uppercase tracking-widest font-sans font-bold text-gray-400 block mb-2">Description</label>
-                  <textarea
-                    name="description"
-                    rows={3}
-                    placeholder="Tell others what you can offer or what you're looking for..."
-                    className="w-full bg-white border-4 border-black px-4 py-3 font-bold focus:outline-none transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] resize-none"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] uppercase tracking-widest font-sans font-bold text-gray-400 block mb-2">Meeting Password (Optional)</label>
-                  <input
-                    name="password"
-                    type="password"
-                    placeholder="Leave empty for public room"
-                    className="w-full bg-white border-4 border-black px-4 py-3 font-bold focus:outline-none transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
-                  />
-                </div>
-                <div className="flex gap-3 pt-4">
-                  <Button type="submit" className="flex-1 bg-[#FF80BF] text-black">Post Now</Button>
-                  <Button type="button" variant="ghost" onClick={() => setIsPostModalOpen(false)}>Cancel</Button>
-                </div>
-              </form>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-      {showVoice && <VoiceAssistant onClose={() => setShowVoice(false)} />}
     </div>
   );
 }
-

@@ -1,1 +1,284 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Dancing+Script:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
+
+@theme {
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-cursive: "Dancing Script", cursive;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+body {
+  background-color: #030712; /* Deep dark blue/black */
+  color: #e2e8f0;
+  background-image: 
+    radial-gradient(circle at 15% 50%, rgba(168, 85, 247, 0.15), transparent 25%),
+    radial-gradient(circle at 85% 30%, rgba(6, 182, 212, 0.15), transparent 25%);
+  background-attachment: fixed;
+}
+
+/* Glassmorphism */
+.glass-panel {
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+}
+
+/* Border Beam Effect */
+.border-beam {
+  position: relative;
+  overflow: hidden;
+  border-radius: 0.75rem; /* rounded-xl */
+  z-index: 1;
+}
+
+.border-beam::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  background: conic-gradient(from 0deg, transparent 70%, #06b6d4 80%, #a855f7 100%);
+  animation: spin 4s linear infinite;
+  z-index: -2;
+}
+
+.border-beam::after {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  background: rgba(15, 23, 42, 0.95); /* Inner background */
+  backdrop-filter: blur(12px);
+  border-radius: inherit;
+  z-index: -1;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Ambient Glow on Hover */
+.ambient-glow {
+  position: relative;
+}
+.ambient-glow::before {
+  content: '';
+  position: absolute;
+  inset: -20px;
+  background: radial-gradient(circle, rgba(6, 182, 212, 0.4) 0%, transparent 70%);
+  filter: blur(20px);
+  z-index: -1;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+.ambient-glow:hover::before {
+  opacity: 1;
+}
+
+/* Scroll Fade Animation */
+.scroll-fade {
+  opacity: 0;
+  transform: translateY(20px);
+  animation: fadeUp 0.6s ease forwards;
+}
+
+@keyframes fadeUp {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Starfield Background */
+.starfield {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+  background: radial-gradient(ellipse at bottom, #1B2735 0%, #090A0F 100%);
+  overflow: hidden;
+}
+
+.star {
+  position: absolute;
+  background: white;
+  border-radius: 50%;
+  opacity: 0.5;
+  animation: twinkle var(--duration) infinite ease-in-out;
+}
+
+@keyframes twinkle {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+/* Futuristic Hover Effect */
+.tech-hover {
+  position: relative;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.tech-hover:hover {
+  color: #22d3ee;
+  text-shadow: 0 0 15px rgba(34, 211, 238, 0.8);
+  letter-spacing: 2px;
+  transform: scale(1.05);
+}
+
+.tech-hover::after {
+  content: '';
+  position: absolute;
+  bottom: -4px;
+  left: 0;
+  width: 0;
+  height: 2px;
+  background: #22d3ee;
+  transition: width 0.3s ease;
+  box-shadow: 0 0 10px #22d3ee;
+}
+
+.tech-hover:hover::after {
+  width: 100%;
+}
+
+/* Wireframe Sphere Animation */
+.nexus-sphere {
+  width: 400px;
+  height: 400px;
+  border-radius: 50%;
+  position: relative;
+  background: radial-gradient(circle at 30% 30%, rgba(34, 211, 238, 0.15), transparent);
+  box-shadow: inset 0 0 60px rgba(34, 211, 238, 0.2), 0 0 40px rgba(34, 211, 238, 0.1);
+  animation: rotateSphere 30s linear infinite;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nexus-sphere::before, .nexus-sphere::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(34, 211, 238, 0.1);
+}
+
+.nexus-sphere::before { transform: rotateY(60deg); }
+.nexus-sphere::after { transform: rotateY(120deg); }
+
+@keyframes rotateSphere {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Neural Tide (Wireframe Terrain) */
+.neural-tide {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 50%;
+  background-image: 
+    linear-gradient(rgba(34, 211, 238, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34, 211, 238, 0.05) 1px, transparent 1px);
+  background-size: 60px 60px;
+  transform: perspective(600px) rotateX(70deg);
+  transform-origin: bottom;
+  animation: tideMove 15s linear infinite;
+  mask-image: linear-gradient(to top, black, transparent);
+}
+
+@keyframes tideMove {
+  from { background-position: 0 0; }
+  to { background-position: 0 60px; }
+}
+
+/* Glitch Effect for Loading */
+.glitch-text {
+  position: relative;
+  animation: glitch 2s infinite;
+}
+
+/* Markdown Styling */
+.markdown-body {
+  line-height: 1.6;
+  color: #cbd5e1;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  color: #f8fafc;
+  font-weight: 700;
+  margin-top: 1.5rem;
+  margin-bottom: 1rem;
+  letter-spacing: -0.025em;
+}
+
+.markdown-body h1 { font-size: 1.875rem; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem; }
+.markdown-body h2 { font-size: 1.5rem; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.25rem; }
+.markdown-body h3 { font-size: 1.25rem; }
+
+.markdown-body p {
+  margin-bottom: 1rem;
+}
+
+.markdown-body ul, .markdown-body ol {
+  margin-bottom: 1rem;
+  padding-left: 1.5rem;
+}
+
+.markdown-body ul {
+  list-style-type: disc;
+}
+
+.markdown-body ol {
+  list-style-type: decimal;
+}
+
+.markdown-body li {
+  margin-bottom: 0.5rem;
+}
+
+.markdown-body strong {
+  color: #22d3ee;
+  font-weight: 600;
+}
+
+.markdown-body blockquote {
+  border-left: 4px solid #a855f7;
+  padding-left: 1rem;
+  font-style: italic;
+  color: #94a3b8;
+  margin: 1.5rem 0;
+}
+
+.markdown-body code {
+  background: rgba(0,0,0,0.3);
+  padding: 0.2rem 0.4rem;
+  border-radius: 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  color: #f472b6;
+}
+
+.markdown-body pre {
+  background: rgba(0,0,0,0.4);
+  padding: 1rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  margin-bottom: 1rem;
+  border: 1px solid rgba(255,255,255,0.05);
+}
+
+.markdown-body hr {
+  border: 0;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  margin: 2rem 0;
+}
+

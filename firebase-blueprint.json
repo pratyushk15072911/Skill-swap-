@@ -12,6 +12,20 @@
         "photoURL": { "type": "string" },
         "college": { "type": "string", "description": "The student's college name" },
         "bio": { "type": "string" },
+        "portfolioUrl": { "type": "string", "description": "Link to the user's portfolio or personal website" },
+        "learningPreference": { "type": "string", "enum": ["visual", "auditory", "kinesthetic"], "description": "User's preferred learning style" },
+        "availability": { "type": "string", "description": "User's available times for sessions" },
+        "skills": { 
+          "type": "array", 
+          "items": { 
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "level": { "type": "string", "enum": ["Beginner", "Intermediate", "Advanced", "Expert"] }
+            }
+          },
+          "description": "List of skills with proficiency levels"
+        },
         "skillsToTeach": { "type": "array", "items": { "type": "string" } },
         "skillsToLearn": { "type": "array", "items": { "type": "string" } },
         "certificates": { 
@@ -53,7 +67,8 @@
         "participants": { "type": "array", "items": { "type": "string" } },
         "duration": { "type": "number" },
         "roomId": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "createdAt": { "type": "string", "format": "date-time" },
+        "report": { "type": "string", "description": "AI-generated session report based on slides and chat." }
       },
       "required": ["participants", "roomId", "createdAt"]
     },

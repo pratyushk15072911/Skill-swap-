@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
-import { initializeFirestore, doc, getDoc, getDocs, setDoc, collection, addDoc, query, where, onSnapshot, orderBy, limit, serverTimestamp, getDocFromServer, updateDoc, deleteDoc, arrayUnion } from 'firebase/firestore';
+import { initializeFirestore, doc, getDoc, getDocs, setDoc, collection, addDoc, query, where, onSnapshot, orderBy, limit, serverTimestamp, getDocFromServer, updateDoc, deleteDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 // Import the Firebase configuration
 // @ts-ignore
@@ -16,6 +17,7 @@ export const db = initializeFirestore(app, {
 
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+export const storage = getStorage(app);
 
 // Validation function for Firestore connection
 async function testConnection() {
@@ -29,4 +31,4 @@ async function testConnection() {
 }
 testConnection();
 
-export { signInWithPopup, signOut, doc, getDoc, getDocs, setDoc, collection, addDoc, query, where, onSnapshot, orderBy, limit, serverTimestamp, updateDoc, deleteDoc, arrayUnion };
+export { signInWithPopup, signOut, doc, getDoc, getDocs, setDoc, collection, addDoc, query, where, onSnapshot, orderBy, limit, serverTimestamp, updateDoc, deleteDoc, arrayUnion, arrayRemove, ref, uploadBytes, getDownloadURL };
