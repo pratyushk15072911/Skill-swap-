@@ -129,6 +129,26 @@
         "status": { "type": "string", "enum": ["waiting", "admitted", "denied"] }
       },
       "required": ["userId", "displayName", "joinedAt", "status"]
+    },
+    "Call": {
+      "title": "WebRTC Call Signaling",
+      "description": "Stores SDP offers and answers for WebRTC signaling.",
+      "type": "object",
+      "properties": {
+        "offer": { "type": "object" },
+        "answer": { "type": "object" }
+      }
+    },
+    "IceCandidate": {
+      "title": "WebRTC ICE Candidate",
+      "description": "Stores ICE candidates for WebRTC signaling.",
+      "type": "object",
+      "properties": {
+        "candidate": { "type": "string" },
+        "sdpMid": { "type": "string" },
+        "sdpMLineIndex": { "type": "number" },
+        "userId": { "type": "string" }
+      }
     }
   },
   "firestore": {
@@ -151,6 +171,14 @@
     "/rooms/{roomId}/waitingUsers/{userId}": {
       "schema": "WaitingUser",
       "description": "Users in the waiting room"
+    },
+    "/rooms/{roomId}/calls/{callId}": {
+      "schema": "Call",
+      "description": "WebRTC signaling data"
+    },
+    "/rooms/{roomId}/calls/{callId}/iceCandidates/{candidateId}": {
+      "schema": "IceCandidate",
+      "description": "WebRTC ICE candidates"
     },
     "/connectionRequests/{requestId}": {
       "schema": "ConnectionRequest",

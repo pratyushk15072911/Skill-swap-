@@ -173,6 +173,17 @@ service cloud.firestore {
              (!('slideUrls' in data) || data.slideUrls is list);
     }
 
+    function isValidCall(data) {
+      return (!('offer' in data) || data.offer is map) &&
+             (!('answer' in data) || data.answer is map);
+    }
+
+    function isValidIceCandidate(data) {
+      return data.keys().hasAll(['candidate', 'sdpMid', 'sdpMLineIndex', 'userId']) &&
+             data.candidate is string && data.sdpMid is string &&
+             data.sdpMLineIndex is number && data.userId == request.auth.uid;
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
@@ -232,6 +243,29 @@ service cloud.firestore {
                       request.resource.data.status in ['admitted', 'denied'];
         allow delete: if isOwner(userId) || isModerator(roomId);
       }
+
+      match /annotations/{annotationId} {
+        allow read, write: if isAuthenticated();
+      }
+
+      match /calls/{callId} {
+        function isParticipant() {
+          return isAuthenticated() && (request.auth.uid in get(/databases/$(database)/documents/rooms/$(roomId)).data.participants);
+        }
+        function isHost() {
+          return isAuthenticated() && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid;
+        }
+
+        allow read: if isParticipant() || isHost();
+        allow create: if (isParticipant() || isHost()) && isValidCall(request.resource.data);
+        allow update: if (isParticipant() || isHost()) && isValidCall(request.resource.data);
+        allow delete: if isModerator(roomId);
+
+        match /iceCandidates/{candidateId} {
+          allow read: if isParticipant() || isHost();
+          allow create: if (isParticipant() || isHost()) && isValidIceCandidate(request.resource.data);
+        }
+      }
     }
 
     match /messages/{messageId} {
@@ -239,6 +273,10 @@ service cloud.firestore {
       allow create: if isAuthenticated() && isValidMessage(request.resource.data);
       allow update: if isAdmin();
       allow delete: if isAdmin();
+    }
+
+    match /user_settings/{userId} {
+      allow read, write: if isOwner(userId);
     }
 
     match /{path=**} {

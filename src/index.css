@@ -5,15 +5,128 @@
   --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
   --font-cursive: "Dancing Script", cursive;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-theme-primary: var(--theme-accent);
+  --color-theme-secondary: var(--theme-accent-hover);
+  --color-theme-glow: var(--glow-color);
+
+  --color-cyan-50: var(--theme-accent-10);
+  --color-cyan-100: var(--theme-accent-10);
+  --color-cyan-200: var(--theme-accent-10);
+  --color-cyan-300: var(--theme-accent);
+  --color-cyan-400: var(--theme-accent);
+  --color-cyan-500: var(--theme-accent);
+  --color-cyan-600: var(--theme-accent-hover);
+  --color-cyan-700: var(--theme-accent-hover);
+  --color-cyan-800: var(--theme-accent-hover);
+  --color-cyan-900: var(--theme-accent-hover);
+  --color-cyan-950: rgba(15, 23, 42, 0.95);
+}
+
+:root {
+  --beam-conic: conic-gradient(from 0deg, transparent 70%, #06b6d4 80%, #a855f7 100%);
+  --glow-color: rgba(6, 182, 212, 0.4);
+  --bg-color: #030712;
+  --bg-gradient-1: rgba(168, 85, 247, 0.15);
+  --bg-gradient-2: rgba(6, 182, 212, 0.15);
+  --theme-accent: #06b6d4;
+  --theme-accent-hover: #0891b2;
+  --theme-accent-10: rgba(6, 182, 212, 0.15);
+  --theme-starfield-bottom: #1B2735;
+}
+
+body.theme-dark {
+  --beam-conic: conic-gradient(from 0deg, transparent 70%, #06b6d4 80%, #a855f7 100%);
+  --glow-color: rgba(6, 182, 212, 0.4);
+  --bg-color: #030712;
+  --bg-gradient-1: rgba(168, 85, 247, 0.15);
+  --bg-gradient-2: rgba(6, 182, 212, 0.15);
+  --theme-accent: #06b6d4;
+  --theme-accent-hover: #0891b2;
+  --theme-accent-10: rgba(6, 182, 212, 0.15);
+  --theme-starfield-bottom: #1B2735;
+}
+
+body.theme-amber {
+  --beam-conic: conic-gradient(from 0deg, transparent 70%, #f59e0b 80%, #f97316 100%);
+  --glow-color: rgba(245, 158, 11, 0.4);
+  --bg-color: #0b0702;
+  --bg-gradient-1: rgba(249, 115, 22, 0.15);
+  --bg-gradient-2: rgba(245, 158, 11, 0.15);
+  --theme-accent: #f59e0b;
+  --theme-accent-hover: #d97706;
+  --theme-accent-10: rgba(245, 158, 11, 0.15);
+  --theme-starfield-bottom: #2d1e0c;
+}
+
+body.theme-purple {
+  --beam-conic: conic-gradient(from 0deg, transparent 70%, #a855f7 80%, #6366f1 100%);
+  --glow-color: rgba(168, 85, 247, 0.4);
+  --bg-color: #080312;
+  --bg-gradient-1: rgba(99, 102, 241, 0.15);
+  --bg-gradient-2: rgba(168, 85, 247, 0.15);
+  --theme-accent: #a855f7;
+  --theme-accent-hover: #9333ea;
+  --theme-accent-10: rgba(168, 85, 247, 0.15);
+  --theme-starfield-bottom: #1d0f3c;
+}
+
+body.theme-emerald {
+  --beam-conic: conic-gradient(from 0deg, transparent 70%, #10b981 80%, #06b6d4 100%);
+  --glow-color: rgba(16, 185, 129, 0.4);
+  --bg-color: #010a05;
+  --bg-gradient-1: rgba(16, 185, 129, 0.15);
+  --bg-gradient-2: rgba(6, 182, 212, 0.15);
+  --theme-accent: #10b981;
+  --theme-accent-hover: #059669;
+  --theme-accent-10: rgba(16, 185, 129, 0.15);
+  --theme-starfield-bottom: #0a2e1d;
+}
+
+body.theme-cyberpunk {
+  --beam-conic: conic-gradient(from 0deg, transparent 70%, #ff007f 80%, #00ffff 100%);
+  --glow-color: rgba(255, 0, 127, 0.5);
+  --bg-color: #040008;
+  --bg-gradient-1: rgba(255, 0, 127, 0.2);
+  --bg-gradient-2: rgba(0, 255, 255, 0.18);
+  --theme-accent: #ff007f;
+  --theme-accent-hover: #ff3399;
+  --theme-accent-10: rgba(255, 0, 127, 0.18);
+  --theme-starfield-bottom: #25002b;
+}
+
+body.theme-vaporwave {
+  --beam-conic: conic-gradient(from 0deg, transparent 70%, #00ffff 80%, #d946ef 100%);
+  --glow-color: rgba(217, 70, 239, 0.45);
+  --bg-color: #0b0616;
+  --bg-gradient-1: rgba(217, 70, 239, 0.18);
+  --bg-gradient-2: rgba(6, 182, 212, 0.18);
+  --theme-accent: #d946ef;
+  --theme-accent-hover: #e879f9;
+  --theme-accent-10: rgba(217, 70, 239, 0.18);
+  --theme-starfield-bottom: #351244;
+}
+
+body.theme-crimson {
+  --beam-conic: conic-gradient(from 0deg, transparent 70%, #ef4444 80%, #dc2626 100%);
+  --glow-color: rgba(239, 68, 68, 0.5);
+  --bg-color: #060101;
+  --bg-gradient-1: rgba(239, 68, 68, 0.2);
+  --bg-gradient-2: rgba(220, 38, 38, 0.1);
+  --theme-accent: #ef4444;
+  --theme-accent-hover: #b91c1c;
+  --theme-accent-10: rgba(239, 68, 68, 0.18);
+  --theme-starfield-bottom: #390000;
 }
 
 body {
-  background-color: #030712; /* Deep dark blue/black */
+  background-color: var(--bg-color); /* Deep dark blue/black */
   color: #e2e8f0;
   background-image: 
-    radial-gradient(circle at 15% 50%, rgba(168, 85, 247, 0.15), transparent 25%),
-    radial-gradient(circle at 85% 30%, rgba(6, 182, 212, 0.15), transparent 25%);
+    radial-gradient(circle at 10% 20%, var(--bg-gradient-1), transparent 50%),
+    radial-gradient(circle at 90% 80%, var(--bg-gradient-2), transparent 50%),
+    radial-gradient(circle at 50% 50%, rgba(15, 23, 42, 0.4), transparent 75%);
   background-attachment: fixed;
+  transition: background-color 0.5s ease, background-image 0.5s ease;
 }
 
 /* Glassmorphism */
@@ -37,7 +150,7 @@ body {
   content: '';
   position: absolute;
   inset: -2px;
-  background: conic-gradient(from 0deg, transparent 70%, #06b6d4 80%, #a855f7 100%);
+  background: var(--beam-conic);
   animation: spin 4s linear infinite;
   z-index: -2;
 }
@@ -65,7 +178,7 @@ body {
   content: '';
   position: absolute;
   inset: -20px;
-  background: radial-gradient(circle, rgba(6, 182, 212, 0.4) 0%, transparent 70%);
+  background: radial-gradient(circle, var(--glow-color) 0%, transparent 70%);
   filter: blur(20px);
   z-index: -1;
   opacity: 0;
@@ -74,6 +187,30 @@ body {
 }
 .ambient-glow:hover::before {
   opacity: 1;
+}
+
+/* Custom dynamic styling to automatically reflect selected themes */
+.interactive-card {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+.interactive-card:hover {
+  transform: translateY(-4px) scale(1.015);
+  border-color: var(--theme-accent) !important;
+  box-shadow: 0 12px 30px -5px rgba(0, 0, 0, 0.6), 0 0 20px var(--glow-color);
+}
+.interactive-btn {
+  background-color: var(--theme-accent-10) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: var(--theme-accent) !important;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.interactive-btn:hover {
+  background-color: var(--theme-accent) !important;
+  color: #ffffff !important;
+  border-color: var(--theme-accent) !important;
+  box-shadow: 0 0 15px var(--glow-color);
+  transform: translateY(-1px);
 }
 
 /* Scroll Fade Animation */
@@ -98,8 +235,9 @@ body {
   width: 100%;
   height: 100%;
   z-index: -1;
-  background: radial-gradient(ellipse at bottom, #1B2735 0%, #090A0F 100%);
+  background: radial-gradient(ellipse at bottom, var(--theme-starfield-bottom, #1B2735) 0%, #090A0F 100%);
   overflow: hidden;
+  transition: background 0.5s ease;
 }
 
 .star {
@@ -123,8 +261,8 @@ body {
 }
 
 .tech-hover:hover {
-  color: #22d3ee;
-  text-shadow: 0 0 15px rgba(34, 211, 238, 0.8);
+  color: var(--theme-accent);
+  text-shadow: 0 0 15px var(--glow-color);
   letter-spacing: 2px;
   transform: scale(1.05);
 }
@@ -136,9 +274,9 @@ body {
   left: 0;
   width: 0;
   height: 2px;
-  background: #22d3ee;
+  background: var(--theme-accent);
   transition: width 0.3s ease;
-  box-shadow: 0 0 10px #22d3ee;
+  box-shadow: 0 0 10px var(--theme-accent);
 }
 
 .tech-hover:hover::after {
@@ -151,8 +289,8 @@ body {
   height: 400px;
   border-radius: 50%;
   position: relative;
-  background: radial-gradient(circle at 30% 30%, rgba(34, 211, 238, 0.15), transparent);
-  box-shadow: inset 0 0 60px rgba(34, 211, 238, 0.2), 0 0 40px rgba(34, 211, 238, 0.1);
+  background: radial-gradient(circle at 30% 30%, var(--bg-gradient-2), transparent);
+  box-shadow: inset 0 0 60px var(--glow-color), 0 0 40px var(--glow-color);
   animation: rotateSphere 30s linear infinite;
   display: flex;
   align-items: center;
@@ -167,7 +305,7 @@ body {
   right: 0;
   bottom: 0;
   border-radius: 50%;
-  border: 1px solid rgba(34, 211, 238, 0.1);
+  border: 1px solid var(--glow-color);
 }
 
 .nexus-sphere::before { transform: rotateY(60deg); }
@@ -186,8 +324,8 @@ body {
   width: 100%;
   height: 50%;
   background-image: 
-    linear-gradient(rgba(34, 211, 238, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(34, 211, 238, 0.05) 1px, transparent 1px);
+    linear-gradient(var(--bg-gradient-1) 1px, transparent 1px),
+    linear-gradient(90deg, var(--bg-gradient-2) 1px, transparent 1px);
   background-size: 60px 60px;
   transform: perspective(600px) rotateX(70deg);
   transform-origin: bottom;
@@ -246,7 +384,7 @@ body {
 }
 
 .markdown-body strong {
-  color: #22d3ee;
+  color: var(--theme-accent);
   font-weight: 600;
 }
 
